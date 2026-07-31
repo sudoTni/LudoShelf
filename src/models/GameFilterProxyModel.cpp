@@ -1,0 +1,74 @@
+#include "GameFilterProxyModel.h"
+#include "GameTableModel.h"
+
+namespace LudoShelf::Models {
+
+GameFilterProxyModel::GameFilterProxyModel(QObject *parent)
+    : QSortFilterProxyModel(parent) {
+    setFilterCaseSensitivity(Qt::CaseInsensitive);
+    setDynamicSortFilter(true);
+    sort(GameTableModel::ColumnTitle, Qt::AscendingOrder);
+}
+
+void GameFilterProxyModel::setSystemFilter(const QUuid& systemId) {
+    beginFilterChange();
+    m_systemFilterId = systemId;
+    endFilterChange();
+}
+
+void GameFilterProxyModel::setSearchText(const QString& text) {
+    beginFilterChange();
+    m_searchText = text.trimmed();
+    endFilterChange();
+}
+
+void GameFilterProxyModel::setFavoritesOnly(bool favoritesOnly) {
+    beginFilterChange();
+    m_favoritesOnly = favoritesOnly;
+    endFilterChange();
+}
+
+
+bool GameFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const {
+    QModelIndex sysIdx = sourceModel()->index(sourceRow, 0, sourceParent);
+    QUuid rowSystemId = QUuid::fromString(sourceModel()->data(sysIdx, GameTableModel::SystemIdRole).toString());
+
+    if (!m_systemFilterId.isNull() && rowSystemId != m_systemFilterId) {
+        return false;
+    }
+
+    if (m_favoritesOnly) {
+        QModelIndex favIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnFavorite, sourceParent);
+        if (sourceModel()->data(favIdx).toString().isEmpty()) {
+            return false;
+        }
+    }
+
+    if (!m_searchText.isEmpty()) {
+        QModelIndex titleIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnTitle, sourceParent);
+        QModelIndex devIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnDeveloper, sourceParent);
+
+        QString title = sourceModel()->data(titleIdx).toString();
+        QString dev = sourceModel()->data(devIdx).toString();
+
+        if (!title.contains(m_searchText, Qt::CaseInsensitive) &&
+            !dev.contains(m_searchText, Qt::CaseInsensitive)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool GameFilterProxyModel::lessThan(const QModelIndex &sourceLeft, const QModelIndex &sourceRight) const {
+    QVariant leftData = sourceModel()->data(sourceLeft);
+    QVariant rightData = sourceModel()->data(sourceRight);
+
+    if (leftData.userType() == QMetaType::Int) {
+        return leftData.toInt() < rightData.toInt();
+    }
+
+    return QString::localeAwareCompare(leftData.toString().toCaseFolded(), rightData.toString().toCaseFolded()) < 0;
+}
+
+} // namespace LudoShelf::Models
