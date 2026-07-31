@@ -7,7 +7,7 @@
 <h3 align="center">Modern, High-Performance Game Library & Emulator Frontend</h3>
 
 <p align="center">
-  Built with for <b>Linux</b> with <b>C++20</b> and <b>Qt 6</b> for seamless platform support, fast ROM indexing, automated metadata lookup, multi-provider cover art acquisition, and flexible launch execution. Compiles for Windows with minimal changes.
+  Built for <b>Linux</b> with <b>C++20</b> and <b>Qt 6</b> for seamless platform support, fast ROM indexing, automated metadata lookup, multi-provider cover art acquisition, and flexible launch execution. Compiles for Windows with minimal changes.
 </p>
 
 <p align="center">
