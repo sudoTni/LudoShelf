@@ -21,6 +21,10 @@
 
 ---
 
+<img width="1920" height="1014" alt="ludoshelf_ss03" src="https://github.com/user-attachments/assets/6b6ae847-0129-4dd3-867f-a340f8cd6b49" />
+
+---
+
 ## Key Features
 
 * 🎮 **System & ROM Management**:
