@@ -15,6 +15,7 @@
 
 namespace LudoShelf::Covers {
 namespace {
+constexpr qint64 MaxImagePixels = 40LL * 1000 * 1000;
 QStringList effectiveConfigRoots(const QStringList& supplied) {
     if (!supplied.isEmpty()) return supplied;
     const QString home = QDir::homePath();
@@ -31,7 +32,7 @@ bool validImage(const QString& path) {
     QImageReader reader(path);
     const QSize size = reader.size();
     return reader.canRead() && size.width() >= 100 && size.height() >= 100 &&
-           size.width() <= 16384 && size.height() <= 16384 && qint64(size.width()) * size.height() <= 100000000;
+           size.width() <= 16384 && size.height() <= 16384 && qint64(size.width()) * size.height() <= MaxImagePixels;
 }
 
 QString noPlaylistExtension(QString name) {

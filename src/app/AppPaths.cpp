@@ -84,8 +84,23 @@ void copyLegacySettingsIfNeeded() {
 
 } // namespace
 
+bool AppPaths::isPortableMode() {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString portableDir = QDir(appDir).filePath("ludoshelf_data");
+    const QString portableMarker = QDir(appDir).filePath("portable.dat");
+    if (QFileInfo::exists(portableDir) || QFileInfo::exists(portableMarker)) {
+        return QFileInfo(portableDir).isWritable() || QFileInfo(appDir).isWritable();
+    }
+    return false;
+}
+
 QString AppPaths::dataRoot() {
-    const QString root = QDir(QCoreApplication::applicationDirPath()).filePath("ludoshelf_data");
+    QString root;
+    if (isPortableMode()) {
+        root = QDir(QCoreApplication::applicationDirPath()).filePath("ludoshelf_data");
+    } else {
+        root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    }
     ensureDirectory(root);
     return root;
 }
@@ -125,22 +140,22 @@ QString AppPaths::legacyDataRoot() {
 }
 
 bool AppPaths::migrateLegacyDataIfNeeded() {
-    const QString portableRoot = dataRoot();
-    if (!QFileInfo(portableRoot).isWritable()) {
-        qCritical() << "Portable data directory is not writable:" << portableRoot;
+    const QString root = dataRoot();
+    if (!ensureDirectory(root) || !QFileInfo(root).isWritable()) {
+        qCritical() << "Data directory is not writable:" << root;
         return false;
     }
 
-    const QString portableDatabase = databasePath();
+    const QString targetDatabase = databasePath();
     const QString legacyRoot = legacyDataRoot();
     const QString legacyDatabase = QDir(legacyRoot).filePath("ludoshelf.db");
-    if (!QFileInfo::exists(portableDatabase) && QFileInfo::exists(legacyDatabase)) {
-        if (!copyDirectoryContents(legacyRoot, portableRoot) || !copyDatabaseSnapshot(legacyDatabase, portableDatabase)) {
-            QFile::remove(portableDatabase);
-            qCritical() << "Could not import the existing library into" << portableRoot;
+    if (targetDatabase != legacyDatabase && !QFileInfo::exists(targetDatabase) && QFileInfo::exists(legacyDatabase)) {
+        if (!copyDirectoryContents(legacyRoot, root) || !copyDatabaseSnapshot(legacyDatabase, targetDatabase)) {
+            QFile::remove(targetDatabase);
+            qCritical() << "Could not import the existing library into" << root;
             return false;
         }
-        qInfo() << "Imported existing LudoShelf data into portable directory:" << portableRoot;
+        qInfo() << "Imported existing LudoShelf data into directory:" << root;
     }
     copyLegacySettingsIfNeeded();
     return true;

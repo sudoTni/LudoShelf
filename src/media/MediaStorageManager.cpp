@@ -8,8 +8,13 @@
 #include <QDebug>
 #include <QImageReader>
 #include <QSaveFile>
+#include <QSqlQuery>
+#include <QSet>
 
 namespace LudoShelf::Media {
+namespace {
+constexpr qint64 MaxImagePixels = 40LL * 1000 * 1000;
+}
 
 MediaStorageManager& MediaStorageManager::instance() {
     static MediaStorageManager mgr;
@@ -73,7 +78,7 @@ QString MediaStorageManager::storeOriginalImage(
     reader.setAutoTransform(true);
     const QSize size = reader.size();
     if (!reader.canRead() || !size.isValid() || size.width() < 100 || size.height() < 100 ||
-        size.width() > 16384 || size.height() > 16384 || qint64(size.width()) * size.height() > 100000000) {
+        size.width() > 16384 || size.height() > 16384 || qint64(size.width()) * size.height() > MaxImagePixels) {
         qWarning() << "Failed to decode image data.";
         return QString();
     }
@@ -225,6 +230,48 @@ QImage MediaStorageManager::loadThumbnail(const QString& sha256, int width, int 
     thumbnail.save(cacheFilePath, "PNG");
 
     return thumbnail;
+}
+
+MediaMaintenanceReport MediaStorageManager::auditStorage(bool removeOrphans) {
+    MediaMaintenanceReport report;
+    QSqlDatabase db = Database::DatabaseManager::instance().connection();
+    QSet<QString> referenced;
+    QSqlQuery references(db);
+    if (references.exec("SELECT DISTINCT media_object_sha256 FROM cover_assets WHERE media_object_sha256 IS NOT NULL AND media_object_sha256 <> ''")) {
+        while (references.next()) referenced.insert(references.value(0).toString());
+    }
+    QSet<QString> legacyPaths;
+    QSqlQuery legacy(db);
+    if (legacy.exec("SELECT path FROM game_media")) while (legacy.next()) legacyPaths.insert(QFileInfo(legacy.value(0).toString()).absoluteFilePath());
+
+    QSqlQuery objects(db);
+    if (!objects.exec("SELECT sha256, relative_path FROM media_objects")) return report;
+    while (objects.next()) {
+        const QString sha256 = objects.value(0).toString();
+        const QString relativePath = objects.value(1).toString();
+        if (QFileInfo(relativePath).isAbsolute()) {
+            // Never delete an external legacy path during automatic cleanup.
+            ++report.referencedObjects;
+            continue;
+        }
+        const QString path = QDir(App::AppPaths::dataRoot()).filePath(relativePath);
+        const bool isReferenced = referenced.contains(sha256) || legacyPaths.contains(QFileInfo(path).absoluteFilePath());
+        if (isReferenced) {
+            ++report.referencedObjects;
+            if (!QFileInfo::exists(path)) { ++report.missingObjects; report.missingHashes.append(sha256); }
+            continue;
+        }
+        ++report.orphanedObjects;
+        if (!removeOrphans) continue;
+        if (QFileInfo::exists(path) && !QFile::remove(path)) continue;
+        QDir(QDir(baseCacheDirectory()).filePath(sha256)).removeRecursively();
+        QSqlQuery remove(db);
+        remove.prepare("DELETE FROM media_objects WHERE sha256 = :sha256 AND NOT EXISTS "
+                       "(SELECT 1 FROM cover_assets WHERE media_object_sha256 = :sha256)");
+        remove.bindValue(":sha256", sha256);
+        if (remove.exec() && remove.numRowsAffected() == 1) ++report.removedObjects;
+    }
+    return report;
 }
 
 } // namespace LudoShelf::Media

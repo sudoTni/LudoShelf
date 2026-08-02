@@ -16,6 +16,8 @@ jobs:
             os: ubuntu-latest
           - name: Windows
             os: windows-latest
+          - name: macOS
+            os: macos-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +36,10 @@ jobs:
           target: 'desktop'
           arch: 'win64_msvc2022_64'
 
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja qt@6 libarchive zlib
+
       - name: Install Windows native dependencies
         if: runner.os == 'Windows'
         shell: pwsh
@@ -50,9 +56,10 @@ jobs:
         run: |
           if [ ! -d build/src/libretro-database-1.22.1/rdb ]; then
             mkdir -p build/src
-            curl --fail --location --retry 3 --output /tmp/libretro-database.tar.gz \
-              https://github.com/libretro/libretro-database/archive/refs/tags/v1.22.1.tar.gz
-            tar -xzf /tmp/libretro-database.tar.gz -C /tmp
+            curl --fail --location --retry 3 --output /tmp/libretro-database.zip \
+              https://github.com/libretro/libretro-database/archive/refs/tags/v1.22.1.zip
+            echo "f98314970f42efdc4bb0d55606b23bec25b74660d1fe8f623eed1aa549e47d12  /tmp/libretro-database.zip" | sha256sum --check --status
+            unzip -q /tmp/libretro-database.zip -d /tmp
             mv /tmp/libretro-database-1.22.1 build/src/libretro-database-1.22.1
           fi
 
@@ -61,6 +68,8 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)"
           else
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           fi

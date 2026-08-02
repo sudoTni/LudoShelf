@@ -1,10 +1,12 @@
 #include "DirectoryScanner.h"
 #include "FilenameParser.h"
+#include "DiscGroupDetector.h"
 
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QDateTime>
 #include <QRegularExpression>
+#include <QSet>
 
 #include <algorithm>
 
@@ -56,10 +58,14 @@ QList<ScanCandidate> DirectoryScanner::scanDirectory(
             QRegularExpression::CaseInsensitiveOption));
     }
 
-    QDirIterator it(dirPath, QDir::Files, flags);
-    while (it.hasNext()) {
-        it.next();
-        QFileInfo fi = it.fileInfo();
+    // Collect all candidate file paths first to analyze multi-disc & descriptor references
+    QList<QFileInfo> fileList;
+    QSet<QString> referencedTracks;
+
+    QDirIterator collectIt(dirPath, QDir::Files, flags);
+    while (collectIt.hasNext()) {
+        collectIt.next();
+        QFileInfo fi = collectIt.fileInfo();
         const QString ext = fi.suffix().toLower();
 
         if ((!allowed.isEmpty() && !allowed.contains(ext)) || excluded.contains(ext)) {
@@ -72,7 +78,24 @@ QList<ScanCandidate> DirectoryScanner::scanDirectory(
             });
         if (patternExcluded) continue;
 
+        DiscGroupInfo groupInfo = DiscGroupDetector::analyzeFile(fi.absoluteFilePath());
+        if (groupInfo.isDescriptor) {
+            for (const QString& refFile : groupInfo.referencedFiles) {
+                referencedTracks.insert(QFileInfo(refFile).absoluteFilePath());
+            }
+        }
+
+        fileList.append(fi);
+    }
+
+    for (const QFileInfo& fi : fileList) {
+        // Skip track files that are owned by a descriptor (.cue, .m3u, .gdi)
+        if (referencedTracks.contains(fi.absoluteFilePath())) {
+            continue;
+        }
+
         ParsedFilenameInfo parsed = FilenameParser::parse(fi.fileName());
+        DiscGroupInfo groupInfo = DiscGroupDetector::analyzeFile(fi.absoluteFilePath());
 
         ScanCandidate candidate;
         candidate.game.systemId = systemId;
@@ -84,6 +107,10 @@ QList<ScanCandidate> DirectoryScanner::scanDirectory(
         candidate.file.fileSize = fi.size();
         candidate.file.modifiedTime = fi.lastModified();
         candidate.file.available = true;
+        candidate.file.role = groupInfo.isDescriptor ? Domain::FileRole::Disc : Domain::FileRole::Primary;
+        if (groupInfo.discNumber > 0) {
+            candidate.file.discNumber = groupInfo.discNumber;
+        }
 
         results.append(candidate);
     }

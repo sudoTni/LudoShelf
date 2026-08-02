@@ -15,12 +15,13 @@ namespace LudoShelf::Covers {
 namespace {
 const QStringList kExtensions{"png", "jpg", "jpeg", "webp", "bmp", "avif"};
 const QStringList kDirectories{"Box Front", "BoxFront", "box-front", "boxart", "boxarts", "covers", "cover", "front", "media", "images", "artwork"};
+constexpr qint64 MaxImagePixels = 40LL * 1000 * 1000;
 
 bool isSafeImage(const QString& path) {
     QImageReader reader(path);
     const QSize size = reader.size();
     return reader.canRead() && size.width() >= 100 && size.height() >= 100 &&
-           size.width() <= 16384 && size.height() <= 16384 && qint64(size.width()) * size.height() <= 100000000;
+           size.width() <= 16384 && size.height() <= 16384 && qint64(size.width()) * size.height() <= MaxImagePixels;
 }
 }
 

@@ -17,6 +17,7 @@ SystemsView::SystemsView(QWidget *parent)
     layout->addWidget(headerLabel);
 
     m_listView = new QListView(this);
+    m_listView->setAccessibleName("Systems list");
     m_listView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_listView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_listView->setAlternatingRowColors(true);
@@ -25,6 +26,7 @@ SystemsView::SystemsView(QWidget *parent)
     layout->addWidget(m_listView);
 
     m_addSystemBtn = new QPushButton("+ Add System", this);
+    m_addSystemBtn->setAccessibleName("Add system");
     layout->addWidget(m_addSystemBtn);
 
     connect(m_addSystemBtn, &QPushButton::clicked, this, &SystemsView::addSystemRequested);

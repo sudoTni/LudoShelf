@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ludoshelf
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Qt Game Library and Emulator Frontend"
     HOMEPAGE_URL "https://github.com/ludoshelf/ludoshelf"
     LANGUAGES CXX

@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QFileInfo>
 #include "../src/app/AppPaths.h"
 #include "../src/media/MediaStorageManager.h"
 #include "../src/database/DatabaseManager.h"
@@ -72,6 +73,50 @@ private slots:
         QCOMPARE(stored.releaseDate, QDate(1994, 1, 1));
         QCOMPARE(stored.developer, QString("User Studio"));
         QCOMPARE(stored.region, QString("USA"));
+    }
+
+    void persistsEnvironmentAndEnforcesOneDefaultEmulator() {
+        Domain::System system;
+        system.name = "Emulator Persistence System";
+        QVERIFY(Database::DatabaseManager::instance().saveSystem(system));
+
+        Domain::EmulatorProfile first;
+        first.name = "First";
+        first.program = "first-emulator";
+        first.environment.insert("LANG", "C");
+        first.environment.insert("SDL_VIDEODRIVER", "x11");
+        QVERIFY(Database::DatabaseManager::instance().saveEmulator(first));
+        QVERIFY(Database::DatabaseManager::instance().setSystemDefaultEmulator(system.id, first.id));
+
+        Domain::EmulatorProfile second;
+        second.name = "Second";
+        second.program = "second-emulator";
+        QVERIFY(Database::DatabaseManager::instance().saveEmulator(second));
+        QVERIFY(Database::DatabaseManager::instance().setSystemDefaultEmulator(system.id, second.id));
+
+        const auto restored = Database::DatabaseManager::instance().getEmulator(first.id);
+        QCOMPARE(restored.environment, first.environment);
+        QCOMPARE(Database::DatabaseManager::instance().getSystemDefaultEmulator(system.id), second.id);
+    }
+
+    void reconcilesFilesMissingFromCompletedScan() {
+        Domain::System system;
+        system.name = "Reconciliation System";
+        QVERIFY(Database::DatabaseManager::instance().saveSystem(system));
+        Domain::Game game;
+        game.systemId = system.id;
+        game.title = "Missing fixture";
+        Domain::GameFile file;
+        file.path = "/virtual/reconciliation.rom";
+        QVERIFY(Database::DatabaseManager::instance().saveGame(game, file));
+
+        QVERIFY(Database::DatabaseManager::instance().reconcileScannedFiles(system.id, {}));
+        QCOMPARE(Database::DatabaseManager::instance().getPrimaryFileForGame(game.id).available, false);
+        QCOMPARE(Database::DatabaseManager::instance().getGame(game.id).missing, true);
+
+        QVERIFY(Database::DatabaseManager::instance().reconcileScannedFiles(system.id, {QFileInfo(file.path).absoluteFilePath()}));
+        QCOMPARE(Database::DatabaseManager::instance().getPrimaryFileForGame(game.id).available, true);
+        QCOMPARE(Database::DatabaseManager::instance().getGame(game.id).missing, false);
     }
 
     void coverFallbackIsReadOnlyForTheModel() {

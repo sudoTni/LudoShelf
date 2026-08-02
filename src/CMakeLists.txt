@@ -14,6 +14,8 @@ add_executable(ludoshelf
     metadata/RomMetadataProvider.h
     metadata/LibretroDatabaseProvider.cpp
     metadata/LibretroDatabaseProvider.h
+    metadata/LibretroDatabaseBootstrapper.cpp
+    metadata/LibretroDatabaseBootstrapper.h
     metadata/RomMetadataCoordinator.cpp
     metadata/RomMetadataCoordinator.h
     covers/CoverTypes.cpp
@@ -107,15 +109,31 @@ target_link_libraries(ludoshelf PRIVATE
 )
 target_include_directories(ludoshelf PRIVATE ${LIBARCHIVE_INCLUDE_DIR})
 
+include(FetchContent)
+
 set(LIBRETRO_DATABASE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/libretro-database-1.22.1/rdb")
 if(NOT EXISTS "${LIBRETRO_DATABASE_ROOT}")
-    message(FATAL_ERROR "libretro-database-1.22.1/rdb must be present in the build src directory.")
+    message(STATUS "libretro-database not found in build dir, fetching v1.22.1...")
+    FetchContent_Declare(
+        libretro_database_fetch
+        URL https://github.com/libretro/libretro-database/archive/refs/tags/v1.22.1.zip
+        URL_HASH SHA256=f98314970f42efdc4bb0d55606b23bec25b74660d1fe8f623eed1aa549e47d12
+    )
+    FetchContent_MakeAvailable(libretro_database_fetch)
+    if(EXISTS "${libretro_database_fetch_SOURCE_DIR}/rdb")
+        set(LIBRETRO_DATABASE_ROOT "${libretro_database_fetch_SOURCE_DIR}/rdb")
+    else()
+        message(FATAL_ERROR "libretro-database-1.22.1/rdb must be present in the build src directory.")
+    endif()
 endif()
 
 install(TARGETS ludoshelf DESTINATION bin)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../ludo.png
     DESTINATION share/pixmaps
     RENAME ludoshelf.png
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/ludoshelf.desktop
+    DESTINATION share/applications
 )
 install(DIRECTORY ${LIBRETRO_DATABASE_ROOT}
     DESTINATION bin/libretro-database-1.22.1

@@ -29,6 +29,7 @@ private:
     QLineEdit *m_programEdit;
     QLineEdit *m_workingDirEdit;
     QPlainTextEdit *m_argumentsEdit;
+    QPlainTextEdit *m_environmentEdit;
     QCheckBox *m_shellModeCheck;
     QCheckBox *m_detachCheck;
     QCheckBox *m_captureOutputCheck;

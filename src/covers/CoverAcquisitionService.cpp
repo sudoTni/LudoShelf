@@ -10,6 +10,7 @@ namespace LudoShelf::Covers {
 namespace {
 constexpr int MaxConcurrentDownloads = 4;
 constexpr int DownloadTimeoutMs = 6000;
+constexpr qsizetype MaxDownloadBytes = 20 * 1024 * 1024;
 }
 
 CoverAcquisitionService::CoverAcquisitionService(QObject *parent) : QObject(parent) {}
@@ -93,7 +94,7 @@ void CoverAcquisitionService::startNextDownload(const QUuid& gameId, const QStri
         return;
     }
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "LudoShelf/0.1 cover-art-client");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "LudoShelf/0.2 cover-art-client");
     request.setRawHeader("Accept", "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.5");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     auto *reply = m_network.get(request);
@@ -104,7 +105,7 @@ void CoverAcquisitionService::startNextDownload(const QUuid& gameId, const QStri
     auto bytes = std::make_shared<QByteArray>();
     connect(reply, &QNetworkReply::readyRead, this, [reply, bytes]() {
         bytes->append(reply->readAll());
-        if (bytes->size() > 40 * 1024 * 1024) reply->abort();
+        if (bytes->size() > MaxDownloadBytes) reply->abort();
     });
     connect(reply, &QNetworkReply::finished, this, [this, reply, bytes, gameId, candidate]() {
         bytes->append(reply->readAll());

@@ -10,6 +10,14 @@
 
 namespace LudoShelf::Media {
 
+struct MediaMaintenanceReport {
+    int referencedObjects{0};
+    int missingObjects{0};
+    int orphanedObjects{0};
+    int removedObjects{0};
+    QStringList missingHashes;
+};
+
 class MediaStorageManager {
 public:
     static MediaStorageManager& instance();
@@ -26,6 +34,8 @@ public:
     QImage loadThumbnail(const QString& sha256, int width = 300, int height = 450);
     QString getObjectAbsolutePath(const QString& sha256);
     QString getObjectAbsolutePath(const QString& sha256, const QString& extension);
+    // Inspection is non-destructive unless removeOrphans is explicitly true.
+    MediaMaintenanceReport auditStorage(bool removeOrphans = false);
 
 private:
     MediaStorageManager() = default;

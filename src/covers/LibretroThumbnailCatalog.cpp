@@ -287,7 +287,7 @@ void LibretroThumbnailCatalog::fetchCollection(const QString& collection) {
     m_fetching.insert(collection);
     const QUrl url(QStringLiteral("https://api.github.com/repos/libretro-thumbnails/%1/git/trees/master?recursive=1").arg(repositoryName(collection)));
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "LudoShelf/0.1 thumbnail-catalog-client");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "LudoShelf/0.2 thumbnail-catalog-client");
     request.setRawHeader("Accept", "application/vnd.github+json");
     const QString etag = m_etags.value(collection);
     if (!etag.isEmpty()) request.setRawHeader("If-None-Match", etag.toUtf8());

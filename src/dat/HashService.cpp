@@ -59,7 +59,11 @@ FileHashes HashService::calculateHashes(const QString& filePath) {
     char buffer[65536];
     while (!file.atEnd()) {
         qint64 bytesRead = file.read(buffer, sizeof(buffer));
-        if (bytesRead <= 0) break;
+        if (bytesRead < 0) return hashes;
+        if (bytesRead == 0) {
+            if (!file.atEnd()) return hashes;
+            break;
+        }
 
         md5Hasher.addData(QByteArrayView(buffer, bytesRead));
         sha1Hasher.addData(QByteArrayView(buffer, bytesRead));

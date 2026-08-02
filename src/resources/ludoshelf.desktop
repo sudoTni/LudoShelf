@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LudoShelf
+GenericName=Game Library Manager & Emulator Frontend
+Comment=Modern game library manager and emulator frontend built with C++20 and Qt 6
+Exec=ludoshelf
+Icon=ludoshelf
+Terminal=false
+Categories=Game;Emulator;Utility;
+Keywords=game;emulator;rom;retroarch;library;frontend;

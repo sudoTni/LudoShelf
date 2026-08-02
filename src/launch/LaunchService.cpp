@@ -13,17 +13,19 @@ namespace LudoShelf::Launch {
 namespace {
 
 QString shellQuote(const QString& value) {
-#ifdef Q_OS_WIN
-    // cmd.exe treats double-quoted arguments as a single token.  Escaping the
-    // quote itself keeps a ROM path or title from ending that quoted token.
     QString escaped = value;
+    escaped.remove('\0');
+    escaped.remove('\r');
+    escaped.remove('\n');
+#ifdef Q_OS_WIN
+    // cmd.exe treats double-quoted arguments as a single token. Escaping the
+    // quote itself keeps a ROM path or title from ending that quoted token.
     escaped.replace('"', QStringLiteral("\\\""));
     return QStringLiteral("\"%1\"").arg(escaped);
 #else
     // POSIX shells cannot interpret any metacharacter inside single quotes.
     // The conventional quote-close/escaped-quote/reopen sequence preserves a
     // literal apostrophe too.
-    QString escaped = value;
     escaped.replace('\'', QStringLiteral("'\"'\"'"));
     return QStringLiteral("'%1'").arg(escaped);
 #endif
@@ -75,15 +77,21 @@ LaunchCommand LaunchService::prepareCommand(
     cmd.environment = emulator.environment;
     cmd.shellMode = emulator.shellMode;
 
+    if (!emulator.enabled) {
+        cmd.valid = false;
+        cmd.validationError = "Emulator profile is disabled.";
+        return cmd;
+    }
+
     if (cmd.program.isEmpty()) {
         cmd.valid = false;
         cmd.validationError = "Emulator executable path is empty.";
         return cmd;
     }
 
-    if (!file.path.isEmpty() && !QFileInfo::exists(file.path)) {
+    if (!file.path.isEmpty() && (!file.available || !QFileInfo::exists(file.path))) {
         cmd.valid = false;
-        cmd.validationError = QString("Game file does not exist: %1").arg(file.path);
+        cmd.validationError = QString("Game file is unavailable: %1").arg(file.path);
         return cmd;
     }
 
@@ -203,7 +211,8 @@ bool LaunchService::launchGame(
         // permanently marked Playing until the next application start.
         emit gameStarted(gameId, pid);
         QTimer::singleShot(0, this, [this, process, gameId] {
-            emit gameFinished(gameId, 0, QProcess::NormalExit, 0);
+            // Negative duration is an explicit "completion unknown" marker.
+            emit gameFinished(gameId, 0, QProcess::NormalExit, -1);
             process->deleteLater();
         });
         return true;

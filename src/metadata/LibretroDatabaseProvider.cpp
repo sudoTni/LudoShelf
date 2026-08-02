@@ -1,4 +1,5 @@
 #include "LibretroDatabaseProvider.h"
+#include "../app/AppPaths.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -596,12 +597,18 @@ ProviderLookupResult lookupFileByTitle(const QString& path, const RomLookupConte
 LibretroDatabaseProvider::LibretroDatabaseProvider(QObject* parent) : RomMetadataProvider(parent) {}
 
 QString LibretroDatabaseProvider::databaseRoot() {
-    // Keep the portable distribution self-contained: the RDB bundle must be
-    // next to the executable, independent of the current working directory.
-    return QDir(QCoreApplication::applicationDirPath()).filePath("libretro-database-1.22.1/rdb");
+    // Prefer a bundled copy, but use the application-managed fallback when a
+    // package omits the database or its install location is read-only.
+    const QString bundled = QDir(QCoreApplication::applicationDirPath()).filePath("libretro-database-1.22.1/rdb");
+    if (QDir(bundled).exists() && !QDir(bundled).entryList({"*.rdb"}, QDir::Files).isEmpty()) return bundled;
+    return QDir(App::AppPaths::dataRoot()).filePath("libretro-database-1.22.1/rdb");
 }
 
 bool LibretroDatabaseProvider::isAvailable() const {
+    return isDatabaseAvailable();
+}
+
+bool LibretroDatabaseProvider::isDatabaseAvailable() {
     return QDir(databaseRoot()).exists() && !QDir(databaseRoot()).entryList({"*.rdb"}, QDir::Files).isEmpty();
 }
 

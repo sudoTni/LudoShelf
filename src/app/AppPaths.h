@@ -21,6 +21,7 @@ public:
 
     // The prior XDG location is read only for the one-time import.  It is not
     // used for new application state.
+    static bool isPortableMode();
     static QString legacyDataRoot();
     static bool migrateLegacyDataIfNeeded();
 };

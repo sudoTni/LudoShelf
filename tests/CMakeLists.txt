@@ -57,12 +57,25 @@ find_library(LIBARCHIVE_LIBRARY archive REQUIRED)
 find_package(ZLIB REQUIRED)
 add_executable(test_rom_metadata
     test_rom_metadata.cpp
+    ../src/app/AppPaths.cpp
     ../src/metadata/RomMetadataTypes.cpp
     ../src/metadata/RomHashService.cpp
     ../src/metadata/RomMetadataProvider.h
     ../src/metadata/LibretroDatabaseProvider.cpp
 )
 target_include_directories(test_rom_metadata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${LIBARCHIVE_INCLUDE_DIR})
-target_link_libraries(test_rom_metadata PRIVATE Qt6::Core Qt6::Concurrent Qt6::Test ${LIBARCHIVE_LIBRARY} ZLIB::ZLIB)
+target_link_libraries(test_rom_metadata PRIVATE Qt6::Core Qt6::Concurrent Qt6::Sql Qt6::Test ${LIBARCHIVE_LIBRARY} ZLIB::ZLIB)
 target_compile_definitions(test_rom_metadata PRIVATE LUDOSHELF_TEST_LIBRETRO_DATABASE_ROOT="${CMAKE_BINARY_DIR}/src/libretro-database-1.22.1/rdb")
 add_test(NAME test_rom_metadata COMMAND test_rom_metadata)
+
+add_executable(test_library_backup
+    test_library_backup.cpp
+    ../src/app/AppPaths.cpp
+    ../src/app/LibraryBackupService.cpp
+    ../src/covers/CoverTypes.cpp
+    ../src/database/DatabaseManager.cpp
+    ../src/media/MediaStorageManager.cpp
+)
+target_include_directories(test_library_backup PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(test_library_backup PRIVATE Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test)
+add_test(NAME test_library_backup COMMAND test_library_backup)

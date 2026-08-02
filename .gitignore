@@ -1,40 +1,9 @@
-# Build directories
-build/
-bin/
-lib/
-out/
-
-# CMake output
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-CTestTestfile.cmake
-install_manifest.txt
-
-# C++ compiled binaries and libraries
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dylib
-*.dll
-*.exe
-
-# Qt & IDE files
+/build/
+/cmake-build-*/
+/compile_commands.json
 *.user
-*.user.*
-*.pro.user
-*.pro.user.*
-.qtc_settings/
-.vscode/
-.idea/
-*.suo
-*.sln
-*.vcxproj
-*.vcxproj.filters
-
-# Operating System files
-.DS_Store
-Thumbs.db
+*.swp
+*.db
+*.db-shm
+*.db-wal
+/ludoshelf_data/

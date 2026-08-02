@@ -8,7 +8,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("LudoShelf");
     app.setOrganizationName("LudoShelf");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("0.2.0");
     app.setWindowIcon(QIcon(":/ludo.png"));
 
     // Initialize Database

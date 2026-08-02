@@ -2,6 +2,7 @@
 #define LUDOSHELF_MODELS_GAMETABLEMODEL_H
 
 #include <QAbstractTableModel>
+#include <QCache>
 #include <QHash>
 #include <QList>
 #include <QPixmap>
@@ -28,7 +29,8 @@ public:
         GameIdRole = Qt::UserRole + 1,
         SystemIdRole,
         GameObjectRole,
-        CoverPixmapRole
+        CoverPixmapRole,
+        GenreTextRole
     };
 
     explicit GameTableModel(QObject *parent = nullptr);
@@ -45,10 +47,10 @@ public:
 private:
     QList<Domain::Game> m_games;
     // Model roles can be requested repeatedly while a view is painting or
-    // laying out.  Keep artwork resolution read-only and memoized so painting
-    // never turns into a database-write or disk-I/O hot path.
-    mutable QHash<QUuid, QPixmap> m_coverPixmapByGame;
+    // laying out. Keep artwork resolution read-only and memoized in a bounded LRU cache.
+    mutable QCache<QUuid, QPixmap> m_coverPixmapByGame;
     mutable QHash<QUuid, QString> m_systemNameById;
+    QHash<QUuid, QString> m_coverShaByGame;
 };
 
 } // namespace LudoShelf::Models

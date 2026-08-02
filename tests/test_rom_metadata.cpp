@@ -9,6 +9,7 @@
 #include <archive_entry.h>
 
 #include "../src/metadata/LibretroDatabaseProvider.h"
+#include "../src/app/AppPaths.h"
 #include "../src/metadata/RomHashService.h"
 
 namespace {
@@ -287,8 +288,11 @@ private slots:
     }
 
     void locatesTheDatabaseBesideTheExecutable() {
-        const QString expected = QDir(QCoreApplication::applicationDirPath())
+        const QString bundled = QDir(QCoreApplication::applicationDirPath())
             .filePath("libretro-database-1.22.1/rdb");
+        const QString expected = QDir(bundled).exists() && !QDir(bundled).entryList({"*.rdb"}, QDir::Files).isEmpty()
+            ? bundled
+            : QDir(LudoShelf::App::AppPaths::dataRoot()).filePath("libretro-database-1.22.1/rdb");
         QCOMPARE(LudoShelf::Metadata::LibretroDatabaseProvider::databaseRoot(), expected);
     }
 };

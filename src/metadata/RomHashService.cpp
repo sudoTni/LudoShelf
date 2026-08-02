@@ -28,6 +28,10 @@ bool ignoredArchiveMember(const QString& path) {
     return QStringList{"txt", "nfo", "diz", "jpg", "jpeg", "png", "gif", "webp", "pdf", "html", "url"}.contains(suffix);
 }
 
+constexpr int MaxArchiveMembers = 500;
+constexpr int MaxHashCandidates = 20;
+constexpr qint64 MaxArchiveUncompressedBytes = 8LL * 1024 * 1024 * 1024;
+
 HashCandidate hashDevice(const QString& payloadKey, qint64 size, const std::function<qint64(char*, qint64)>& read,
                          const std::shared_ptr<std::atomic_bool>& cancelled) {
     HashCandidate candidate;
@@ -215,7 +219,7 @@ RomHashBatch hashChdCdTracks(const QString& path, const std::shared_ptr<std::ato
     }
     const QStringList tracks = cueDataTracks(cuePath);
     for (const QString& track : tracks) {
-        if (batch.candidates.size() >= 50 || isCancelled(cancelled)) break;
+        if (batch.candidates.size() >= MaxHashCandidates || isCancelled(cancelled)) break;
         QFile extractedTrack(track);
         if (!extractedTrack.open(QIODevice::ReadOnly) || extractedTrack.size() <= 0) continue;
         const auto candidate = hashSha1Device(
@@ -229,16 +233,26 @@ RomHashBatch hashChdCdTracks(const QString& path, const std::shared_ptr<std::ato
 
 struct ArchiveMember { QString path; qint64 size{0}; quint32 crc{0}; };
 
-QList<ArchiveMember> archiveMembers(const QString& archivePath) {
+QList<ArchiveMember> archiveMembers(const QString& archivePath, bool* exceededLimits = nullptr) {
     QList<ArchiveMember> results;
+    if (exceededLimits) *exceededLimits = false;
     archive *reader = archive_read_new();
     archive_read_support_filter_all(reader); archive_read_support_format_all(reader);
     if (archive_read_open_filename(reader, archivePath.toUtf8().constData(), 128 * 1024) != ARCHIVE_OK) { archive_read_free(reader); return {}; }
     archive_entry *entry = nullptr;
+    qint64 totalBytes = 0;
     while (archive_read_next_header(reader, &entry) == ARCHIVE_OK) {
         const QString path = QString::fromUtf8(archive_entry_pathname(entry));
         const qint64 size = archive_entry_size(entry);
-        if (!path.endsWith('/') && size > 0 && !ignoredArchiveMember(path)) results.append(ArchiveMember{path, size, 0});
+        if (!path.endsWith('/') && size > 0 && !ignoredArchiveMember(path)) {
+            if (results.size() >= MaxArchiveMembers || size > MaxArchiveUncompressedBytes - totalBytes) {
+                if (exceededLimits) *exceededLimits = true;
+                archive_read_free(reader);
+                return {};
+            }
+            totalBytes += size;
+            results.append(ArchiveMember{path, size, 0});
+        }
         archive_read_data_skip(reader);
     }
     archive_read_free(reader);
@@ -325,7 +339,7 @@ RomHashBatch RomHashService::discoverAndHash(const QString& path, const QDateTim
     if (QStringList{"cso", "rvz"}.contains(suffix)) { batch.unsupportedReason = "This transformed disc container is not supported for exact remote identification."; return batch; }
     if (suffix == "cue") {
         for (const QString& track : cueDataTracks(path)) {
-            if (batch.candidates.size() >= 50 || isCancelled(cancelled)) break;
+        if (batch.candidates.size() >= MaxHashCandidates || isCancelled(cancelled)) break;
             const auto candidate = hashPlainFile(track, track, cancelled);
             if (!candidate.sha256.isEmpty()) batch.candidates.append(candidate);
         }
@@ -333,7 +347,9 @@ RomHashBatch RomHashService::discoverAndHash(const QString& path, const QDateTim
         return batch;
     }
     if (QStringList{"zip", "7z"}.contains(suffix)) {
-        const auto members = archiveMembers(path);
+        bool exceededLimits = false;
+        const auto members = archiveMembers(path, &exceededLimits);
+        if (exceededLimits) { batch.unsupportedReason = "Archive exceeds the metadata hashing safety limits (500 members or 8 GiB uncompressed)."; return batch; }
         if (members.isEmpty()) { batch.error = "The archive has no supported content members or could not be read."; return batch; }
         if (std::any_of(members.cbegin(), members.cend(), [](const ArchiveMember& member) {
                 return QStringList{"cso", "rvz"}.contains(QFileInfo(member.path).suffix().toLower());
@@ -342,14 +358,14 @@ RomHashBatch RomHashService::discoverAndHash(const QString& path, const QDateTim
             return batch;
         }
         for (const auto& member : members) {
-            if (batch.candidates.size() >= 50 || isCancelled(cancelled)) break;
+            if (batch.candidates.size() >= MaxHashCandidates || isCancelled(cancelled)) break;
             const auto candidate = hashArchiveMember(path, member, cancelled);
             if (!candidate.sha256.isEmpty()) batch.candidates.append(candidate);
-            if (QFileInfo(member.path).suffix().compare("smd", Qt::CaseInsensitive) == 0 && batch.candidates.size() < 50) {
+            if (QFileInfo(member.path).suffix().compare("smd", Qt::CaseInsensitive) == 0 && batch.candidates.size() < MaxHashCandidates) {
                 const auto canonical = hashSmdArchiveMember(path, member, cancelled);
                 if (!canonical.sha256.isEmpty()) batch.candidates.append(canonical);
             }
-            if (QFileInfo(member.path).suffix().compare("nes", Qt::CaseInsensitive) == 0 && batch.candidates.size() < 50) {
+            if (QFileInfo(member.path).suffix().compare("nes", Qt::CaseInsensitive) == 0 && batch.candidates.size() < MaxHashCandidates) {
                 const auto canonical = hashINesArchiveMember(path, member, cancelled);
                 if (!canonical.sha256.isEmpty()) batch.candidates.append(canonical);
             }

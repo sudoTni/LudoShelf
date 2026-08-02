@@ -1,5 +1,7 @@
 #include "DiagnosticsDialog.h"
 #include "../database/DatabaseManager.h"
+#include "../app/AppPaths.h"
+#include "../metadata/LibretroDatabaseProvider.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -8,6 +10,8 @@
 #include <QSysInfo>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QDirIterator>
+#include <QFileInfo>
 
 
 namespace LudoShelf::UI {
@@ -48,7 +52,7 @@ DiagnosticsDialog::DiagnosticsDialog(QWidget *parent)
 void DiagnosticsDialog::populateDiagnostics() {
     QString report;
     report += "=== LudoShelf System Diagnostics ===\n";
-    report += QString("Application Version: 0.1.0\n");
+    report += QString("Application Version: 0.2.0\n");
     report += QString("Qt Version: %1\n").arg(QT_VERSION_STR);
     report += QString("Operating System: %1 (%2)\n")
         .arg(QSysInfo::prettyProductName())
@@ -64,10 +68,26 @@ void DiagnosticsDialog::populateDiagnostics() {
     report += "=== Database Status ===\n";
     QString dbPath = Database::DatabaseManager::instance().databasePath();
     report += QString("Database Path: %1\n").arg(dbPath);
+    report += QString("Database Size: %1 bytes\n").arg(QFileInfo(dbPath).size());
 
     QString dbIntegrity;
     bool dbOk = Database::DatabaseManager::instance().checkIntegrity(dbIntegrity);
     report += QString("Database Integrity Check: %1 (%2)\n\n").arg(dbOk ? "PASSED" : "FAILED").arg(dbIntegrity);
+
+    report += "=== Storage and Metadata Health ===\n";
+    qint64 mediaBytes = 0;
+    int mediaFiles = 0;
+    QDirIterator mediaIterator(App::AppPaths::mediaRoot(), QDir::Files, QDirIterator::Subdirectories);
+    while (mediaIterator.hasNext()) {
+        mediaIterator.next();
+        mediaBytes += mediaIterator.fileInfo().size();
+        ++mediaFiles;
+    }
+    report += QString("Managed Media: %1 files, %2 bytes\n").arg(mediaFiles).arg(mediaBytes);
+    const Metadata::LibretroDatabaseProvider provider;
+    report += QString("Libretro Database: %1 (%2)\n")
+        .arg(provider.isAvailable() ? "Available" : "Unavailable", provider.databaseRoot());
+    report += "Diagnostics may include local paths. Redact before sharing publicly.\n\n";
 
     report += "=== Configured Systems ===\n";
     auto systems = Database::DatabaseManager::instance().getSystems();

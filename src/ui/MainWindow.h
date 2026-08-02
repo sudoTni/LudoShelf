@@ -34,6 +34,7 @@ class QAction;
 #include "../covers/RetroArchCoverDiscovery.h"
 #include "../metadata/RomMetadataCoordinator.h"
 #include "../metadata/RomMetadataRepository.h"
+#include "../metadata/LibretroDatabaseBootstrapper.h"
 
 namespace LudoShelf::UI {
 
@@ -62,6 +63,7 @@ private slots:
     void onCreateBackupClicked();
     void onDatAuditClicked();
     void onDiagnosticsClicked();
+    void onAuditMediaStorageClicked();
     void onEditGameClicked();
     void onTestLaunchClicked();
     void onToggleFavoriteClicked();
@@ -123,11 +125,13 @@ private:
     Covers::CoverAcquisitionService *m_coverAcquisitionService;
     Covers::LibretroThumbnailCatalog *m_thumbnailCatalog;
     Metadata::RomMetadataCoordinator *m_romMetadataCoordinator;
+    Metadata::LibretroDatabaseBootstrapper *m_libretroDatabaseBootstrapper;
     QFutureWatcher<Covers::RetroArchDiscoveryContext> *m_retroArchContextWatcher;
     QFileSystemWatcher *m_scanRootWatcher{nullptr};
     QTimer *m_scanWatchDebounce{nullptr};
     QHash<QString, QUuid> m_watchedSystemByPath;
     QSet<QUuid> m_pendingWatchedSystems;
+    QSet<QUuid> m_activeRescans;
     Covers::RetroArchDiscoveryContext m_retroArchContext;
     QQueue<QUuid> m_enrichmentQueue;
     QHash<QUuid, PendingEnrichment> m_enrichmentByGame;

@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QComboBox>
+#include <QFutureWatcher>
 
 #include "../domain/System.h"
 #include "../domain/EmulatorProfile.h"
@@ -53,6 +54,7 @@ private:
     // Page 4 fields
     QTableWidget *m_previewTable;
     QLabel *m_previewCountLabel;
+    QFutureWatcher<QList<Scanning::ScanCandidate>> *m_previewScanWatcher{nullptr};
 
     Domain::System m_system;
     QList<Scanning::ScanCandidate> m_discoveredCandidates;

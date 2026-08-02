@@ -88,6 +88,8 @@ DatAuditDialog::DatAuditDialog(const QUuid& systemId, QWidget *parent)
 
         m_resultsTable->setRowCount(0);
         int verifiedCount = 0;
+        QSqlDatabase db = Database::DatabaseManager::instance().connection();
+        db.transaction();
         for (const AuditItem& item : run.items) {
             const int row = m_resultsTable->rowCount();
             m_resultsTable->insertRow(row);
@@ -98,9 +100,10 @@ DatAuditDialog::DatAuditDialog(const QUuid& systemId, QWidget *parent)
                 m_resultsTable->setItem(row, 3, new QTableWidgetItem("Missing File"));
                 continue;
             }
-            Database::DatabaseManager::instance().updateFileHashes(item.file.id, item.hashes.crc32, item.hashes.md5, item.hashes.sha1);
             Database::DatEntry match;
-            const bool found = item.hashes.success && Database::DatabaseManager::instance().matchDatEntry(item.hashes.crc32, item.hashes.sha1, match);
+            const bool found = item.hashes.success && Database::DatabaseManager::instance().matchDatEntry(m_systemId, item.hashes.crc32, item.hashes.sha1, match);
+            Database::DatabaseManager::instance().updateFileHashes(item.file.id, item.hashes.crc32, item.hashes.md5, item.hashes.sha1,
+                                                                   found ? match.id : QUuid{});
             m_resultsTable->setItem(row, 1, new QTableWidgetItem(item.hashes.crc32.isEmpty() ? item.hashes.sha1 : item.hashes.crc32));
             if (found) {
                 ++verifiedCount;
@@ -111,6 +114,7 @@ DatAuditDialog::DatAuditDialog(const QUuid& systemId, QWidget *parent)
                 m_resultsTable->setItem(row, 3, new QTableWidgetItem("Unverified / No Match"));
             }
         }
+        db.commit();
         m_statusLabel->setText(QString("Audit complete. Verified %1 of %2 games.").arg(verifiedCount).arg(run.items.size()));
     });
 }

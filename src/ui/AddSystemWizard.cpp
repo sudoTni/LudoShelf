@@ -13,6 +13,7 @@
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QFile>
+#include <QtConcurrentRun>
 
 namespace LudoShelf::UI {
 
@@ -26,6 +27,21 @@ AddSystemWizard::AddSystemWizard(QWidget *parent)
     addPage(createLocationPage());
     addPage(createEmulatorPage());
     addPage(createPreviewPage());
+
+    m_previewScanWatcher = new QFutureWatcher<QList<Scanning::ScanCandidate>>(this);
+    connect(m_previewScanWatcher, &QFutureWatcher<QList<Scanning::ScanCandidate>>::finished, this, [this] {
+        m_discoveredCandidates = m_previewScanWatcher->result();
+        m_previewCountLabel->setText(QString("Discovered %1 games").arg(m_discoveredCandidates.size()));
+        m_previewTable->setRowCount(0);
+        for (const auto& candidate : m_discoveredCandidates) {
+            const int row = m_previewTable->rowCount();
+            m_previewTable->insertRow(row);
+            m_previewTable->setItem(row, 0, new QTableWidgetItem(candidate.game.title));
+            m_previewTable->setItem(row, 1, new QTableWidgetItem(candidate.game.region));
+            m_previewTable->setItem(row, 2, new QTableWidgetItem(candidate.file.path));
+        }
+        button(QWizard::FinishButton)->setEnabled(true);
+    });
 }
 
 QWizardPage* AddSystemWizard::createIdentityPage() {
@@ -184,25 +200,17 @@ QWizardPage* AddSystemWizard::createPreviewPage() {
 
     connect(this, &QWizard::currentIdChanged, this, [this](int id) {
         if (id == 3) { // Preview page index
-            Scanning::DirectoryScanner scanner;
             QStringList exts = m_extensionsEdit->text().split(',', Qt::SkipEmptyParts);
-            m_discoveredCandidates = scanner.scanDirectory(
-                m_system.id,
-                m_romDirEdit->text(),
-                exts,
-                m_recursiveCheck->isChecked()
-            );
-
-            m_previewCountLabel->setText(QString("Discovered %1 games").arg(m_discoveredCandidates.size()));
+            const QUuid systemId = m_system.id;
+            const QString path = m_romDirEdit->text();
+            const bool recursive = m_recursiveCheck->isChecked();
+            m_previewCountLabel->setText("Scanning ROM folder in the background…");
             m_previewTable->setRowCount(0);
-
-            for (const auto& candidate : m_discoveredCandidates) {
-                int row = m_previewTable->rowCount();
-                m_previewTable->insertRow(row);
-                m_previewTable->setItem(row, 0, new QTableWidgetItem(candidate.game.title));
-                m_previewTable->setItem(row, 1, new QTableWidgetItem(candidate.game.region));
-                m_previewTable->setItem(row, 2, new QTableWidgetItem(candidate.file.path));
-            }
+            button(QWizard::FinishButton)->setEnabled(false);
+            m_previewScanWatcher->setFuture(QtConcurrent::run([systemId, path, exts, recursive] {
+                Scanning::DirectoryScanner scanner;
+                return scanner.scanDirectory(systemId, path, exts, recursive);
+            }));
         }
     });
 

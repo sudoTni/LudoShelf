@@ -15,6 +15,7 @@ public:
     QUuid lookupByTitle(const RomLookupContext& context);
 
     bool isAvailable() const;
+    static bool isDatabaseAvailable();
     static QString databaseRoot();
     static ProviderLookupResult lookupInDirectory(const QString& rdbDirectory,
                                                   const QList<HashCandidate>& candidates,

@@ -7,6 +7,8 @@
 #include <QUuid>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QSet>
+#include <QHash>
 
 #include "../domain/System.h"
 #include "../domain/Game.h"
@@ -94,7 +96,9 @@ public:
     // Fill only blank game-list fields with curated ROM metadata.  User and
     // scanner supplied values always take precedence.
     bool fillGameMetadataFields(const QUuid& gameId, const QDate& releaseDate,
-                                const QString& developer, const QString& region);
+                                const QString& developer, const QString& region,
+                                const QString& publisher = {}, const QStringList& languages = {},
+                                const QStringList& genres = {}, const QString& description = {});
     // Refresh scanner-owned fields without replacing user edits or enriched
     // ROM metadata already stored on the game record.
     bool updateScannedGame(const QUuid& gameId, const Domain::Game& scannedGame, const Domain::GameFile& primaryFile);
@@ -104,7 +108,11 @@ public:
     QList<Domain::GameFile> getFilesForGame(const QUuid& gameId);
     Domain::GameFile getPrimaryFileForGame(const QUuid& gameId);
     bool updateFileAvailability(const QUuid& fileId, bool available);
-    bool updateFileHashes(const QUuid& fileId, const QString& crc32, const QString& md5, const QString& sha1);
+    // Reconcile a completed full-system scan.  Files not observed are marked
+    // unavailable and a game is missing only when none of its files remain available.
+    bool reconcileScannedFiles(const QUuid& systemId, const QSet<QString>& observedAbsolutePaths);
+    bool updateFileHashes(const QUuid& fileId, const QString& crc32, const QString& md5, const QString& sha1,
+                          const QUuid& datMatchId = {});
 
     // Game Media
     QList<GameMedia> getMediaForGame(const QUuid& gameId);
@@ -119,6 +127,7 @@ public:
     bool saveCoverAsset(const Covers::CoverAsset& asset);
     QList<Covers::CoverAsset> getCoverAssetsForGame(const QUuid& gameId);
     Covers::CoverAsset getPreferredCoverAsset(const QUuid& gameId);
+    QHash<QUuid, QString> getPreferredCoverObjectHashes();
     bool setPreferredCoverAsset(const QUuid& gameId, const QUuid& assetId);
     bool saveCoverJob(const Covers::CoverJob& job);
     QList<Covers::CoverJob> getRunnableCoverJobs(const QDateTime& now, int limit = 20);
@@ -135,6 +144,9 @@ public:
     bool savePlaySession(const Domain::PlaySession& session);
     bool markGameLaunching(const QUuid& gameId);
     bool recordCompletedPlay(const Domain::PlaySession& session);
+    // A detached child cannot be observed; keep an audit record without
+    // treating it as a completed play or inventing a duration/exit status.
+    bool recordDetachedLaunch(const Domain::PlaySession& session);
     bool restoreInterruptedGameStatuses();
     QList<Domain::PlaySession> getPlaySessionsForGame(const QUuid& gameId);
 
@@ -142,7 +154,7 @@ public:
     bool saveDatSource(const DatSource& source, const QList<DatEntry>& entries);
     QList<DatSource> getDatSources(const QUuid& systemId);
     QList<DatEntry> getDatEntriesForSource(const QUuid& sourceId);
-    bool matchDatEntry(const QString& crc32, const QString& sha1, DatEntry& matchedEntry);
+    bool matchDatEntry(const QUuid& systemId, const QString& crc32, const QString& sha1, DatEntry& matchedEntry);
 
 private:
     DatabaseManager() = default;

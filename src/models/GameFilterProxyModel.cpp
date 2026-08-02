@@ -28,6 +28,23 @@ void GameFilterProxyModel::setFavoritesOnly(bool favoritesOnly) {
     endFilterChange();
 }
 
+void GameFilterProxyModel::setStatusFilter(const QString& status) {
+    beginFilterChange();
+    m_statusFilter = status.trimmed();
+    endFilterChange();
+}
+
+void GameFilterProxyModel::setGenreFilter(const QString& genre) {
+    beginFilterChange();
+    m_genreFilter = genre.trimmed();
+    endFilterChange();
+}
+
+void GameFilterProxyModel::setRegionFilter(const QString& region) {
+    beginFilterChange();
+    m_regionFilter = region.trimmed();
+    endFilterChange();
+}
 
 bool GameFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const {
     QModelIndex sysIdx = sourceModel()->index(sourceRow, 0, sourceParent);
@@ -40,6 +57,27 @@ bool GameFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &so
     if (m_favoritesOnly) {
         QModelIndex favIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnFavorite, sourceParent);
         if (sourceModel()->data(favIdx).toString().isEmpty()) {
+            return false;
+        }
+    }
+
+    if (!m_statusFilter.isEmpty()) {
+        QModelIndex statusIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnStatus, sourceParent);
+        if (sourceModel()->data(statusIdx).toString().compare(m_statusFilter, Qt::CaseInsensitive) != 0) {
+            return false;
+        }
+    }
+
+    if (!m_regionFilter.isEmpty()) {
+        QModelIndex regionIdx = sourceModel()->index(sourceRow, GameTableModel::ColumnRegion, sourceParent);
+        if (!sourceModel()->data(regionIdx).toString().contains(m_regionFilter, Qt::CaseInsensitive)) {
+            return false;
+        }
+    }
+
+    if (!m_genreFilter.isEmpty()) {
+        if (!sourceModel()->data(sysIdx, GameTableModel::GenreTextRole)
+                 .toString().contains(m_genreFilter, Qt::CaseInsensitive)) {
             return false;
         }
     }

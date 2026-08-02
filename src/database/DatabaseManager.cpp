@@ -12,6 +12,8 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QSet>
+#include <QThread>
+#include <QCoreApplication>
 
 namespace LudoShelf::Database {
 namespace {
@@ -43,7 +45,27 @@ QString DatabaseManager::databasePath() const {
 }
 
 QSqlDatabase DatabaseManager::connection() const {
-    return QSqlDatabase::database(m_connectionName);
+    if (m_dbFilePath.isEmpty() || !QCoreApplication::instance()) {
+        return QSqlDatabase::database(m_connectionName);
+    }
+    if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
+        return QSqlDatabase::database(m_connectionName);
+    }
+    const QString threadConnName = QString("%1_thread_%2")
+        .arg(m_connectionName)
+        .arg(reinterpret_cast<quintptr>(QThread::currentThreadId()));
+    if (QSqlDatabase::contains(threadConnName)) {
+        QSqlDatabase db = QSqlDatabase::database(threadConnName);
+        if (db.isOpen()) return db;
+    }
+    QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", threadConnName);
+    db.setDatabaseName(m_dbFilePath);
+    if (db.open()) {
+        QSqlQuery q(db);
+        q.exec("PRAGMA journal_mode = WAL;");
+        q.exec("PRAGMA foreign_keys = ON;");
+    }
+    return db;
 }
 
 bool DatabaseManager::initialize(const QString& dbPath) {
@@ -124,7 +146,7 @@ bool DatabaseManager::createTables() {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     if (!db.isOpen()) return false;
 
-    db.transaction();
+    if (!db.transaction()) return false;
     QSqlQuery q(db);
 
     bool ok = q.exec(R"(
@@ -494,8 +516,7 @@ bool DatabaseManager::createTables() {
 
 
 
-    db.commit();
-    return true;
+    return db.commit();
 }
 
 bool DatabaseManager::migrateSchema() {
@@ -625,7 +646,20 @@ bool DatabaseManager::migrateSchema() {
         return false;
     }
 
-    if (!query.exec("PRAGMA user_version = 4")) {
+    // Older versions allowed several defaults for a system. Keep the oldest
+    // association deterministically, then make the invariant enforceable.
+    if (!query.exec("UPDATE system_emulators SET is_default = 0 WHERE is_default = 1 AND rowid NOT IN "
+                    "(SELECT MIN(rowid) FROM system_emulators WHERE is_default = 1 GROUP BY system_id)")) {
+        db.rollback();
+        return false;
+    }
+    if (!query.exec("CREATE UNIQUE INDEX IF NOT EXISTS one_default_emulator_per_system "
+                    "ON system_emulators(system_id) WHERE is_default = 1")) {
+        db.rollback();
+        return false;
+    }
+
+    if (!query.exec("PRAGMA user_version = 5")) {
         qCritical() << "Could not update database schema version:" << query.lastError().text();
         db.rollback();
         return false;
@@ -924,7 +958,9 @@ bool DatabaseManager::saveGame(const Domain::Game& game, const Domain::GameFile&
 }
 
 bool DatabaseManager::fillGameMetadataFields(const QUuid& gameId, const QDate& releaseDate,
-                                             const QString& developer, const QString& region) {
+                                             const QString& developer, const QString& region,
+                                             const QString& publisher, const QStringList& languages,
+                                             const QStringList& genres, const QString& description) {
     if (gameId.isNull()) return false;
     QSqlQuery query(QSqlDatabase::database(m_connectionName));
     query.prepare(R"(
@@ -934,19 +970,31 @@ bool DatabaseManager::fillGameMetadataFields(const QUuid& gameId, const QDate& r
             developer = CASE WHEN TRIM(COALESCE(developer, '')) = '' AND :developer != ''
                              THEN :developer ELSE developer END,
             region = CASE WHEN TRIM(COALESCE(region, '')) = '' AND :region != ''
-                          THEN :region ELSE region END
+                          THEN :region ELSE region END,
+            publisher = CASE WHEN TRIM(COALESCE(publisher, '')) = '' AND :publisher != ''
+                             THEN :publisher ELSE publisher END,
+            languages = CASE WHEN (TRIM(COALESCE(languages, '')) = '' OR languages = '[]') AND :languages != '[]'
+                             THEN :languages ELSE languages END,
+            genres = CASE WHEN (TRIM(COALESCE(genres, '')) = '' OR genres = '[]') AND :genres != '[]'
+                          THEN :genres ELSE genres END,
+            description = CASE WHEN TRIM(COALESCE(description, '')) = '' AND :description != ''
+                               THEN :description ELSE description END
         WHERE id = :id
     )");
     query.bindValue(":release_date", releaseDate.toString(Qt::ISODate));
     query.bindValue(":developer", developer.trimmed());
     query.bindValue(":region", region.trimmed());
+    query.bindValue(":publisher", publisher.trimmed());
+    query.bindValue(":languages", encodeStringList(languages));
+    query.bindValue(":genres", encodeStringList(genres));
+    query.bindValue(":description", description.trimmed());
     query.bindValue(":id", gameId.toString(QUuid::WithBraces));
     return query.exec();
 }
 
 bool DatabaseManager::saveGamesBatch(const QList<QPair<Domain::Game, Domain::GameFile>>& gamesList) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    db.transaction();
+    if (!db.transaction()) return false;
 
     QSqlQuery qg(db);
     qg.prepare(R"(
@@ -1050,8 +1098,7 @@ bool DatabaseManager::saveGamesBatch(const QList<QPair<Domain::Game, Domain::Gam
         }
     }
 
-    db.commit();
-    return true;
+    return db.commit();
 }
 
 bool DatabaseManager::updateScannedGame(const QUuid& gameId, const Domain::Game& scannedGame,
@@ -1131,13 +1178,47 @@ bool DatabaseManager::updateFileAvailability(const QUuid& fileId, bool available
     return q.exec();
 }
 
-bool DatabaseManager::updateFileHashes(const QUuid& fileId, const QString& crc32, const QString& md5, const QString& sha1) {
+bool DatabaseManager::reconcileScannedFiles(const QUuid& systemId, const QSet<QString>& observedAbsolutePaths) {
+    if (systemId.isNull()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    if (!db.transaction()) return false;
+
+    QSqlQuery files(db);
+    files.prepare("SELECT game_files.id, game_files.path FROM game_files "
+                  "JOIN games ON games.id = game_files.game_id WHERE games.system_id = :system_id");
+    files.bindValue(":system_id", systemId.toString(QUuid::WithBraces));
+    if (!files.exec()) { db.rollback(); return false; }
+
+    QSqlQuery setAvailability(db);
+    setAvailability.prepare("UPDATE game_files SET available = :available WHERE id = :id");
+    while (files.next()) {
+        const QString storedPath = QFileInfo(files.value(1).toString()).absoluteFilePath();
+        const bool available = observedAbsolutePaths.contains(storedPath);
+        setAvailability.bindValue(":available", available ? 1 : 0);
+        setAvailability.bindValue(":id", files.value(0).toString());
+        if (!setAvailability.exec()) { db.rollback(); return false; }
+    }
+
+    QSqlQuery updateGames(db);
+    updateGames.prepare(R"(
+        UPDATE games SET missing = NOT EXISTS (
+            SELECT 1 FROM game_files WHERE game_files.game_id = games.id AND game_files.available = 1
+        ) WHERE system_id = :system_id
+    )");
+    updateGames.bindValue(":system_id", systemId.toString(QUuid::WithBraces));
+    if (!updateGames.exec()) { db.rollback(); return false; }
+    return db.commit();
+}
+
+bool DatabaseManager::updateFileHashes(const QUuid& fileId, const QString& crc32, const QString& md5, const QString& sha1,
+                                       const QUuid& datMatchId) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery q(db);
-    q.prepare("UPDATE game_files SET crc32 = :crc32, md5 = :md5, sha1 = :sha1 WHERE id = :id");
+    q.prepare("UPDATE game_files SET crc32 = :crc32, md5 = :md5, sha1 = :sha1, dat_match_id = :dat_match_id WHERE id = :id");
     q.bindValue(":crc32", crc32);
     q.bindValue(":md5", md5);
     q.bindValue(":sha1", sha1);
+    q.bindValue(":dat_match_id", datMatchId.isNull() ? QString() : datMatchId.toString(QUuid::WithBraces));
     q.bindValue(":id", fileId.toString(QUuid::WithBraces));
     return q.exec();
 }
@@ -1416,6 +1497,15 @@ Covers::CoverAsset DatabaseManager::getPreferredCoverAsset(const QUuid& gameId) 
     return {};
 }
 
+QHash<QUuid, QString> DatabaseManager::getPreferredCoverObjectHashes() {
+    QHash<QUuid, QString> result;
+    QSqlQuery query(QSqlDatabase::database(m_connectionName));
+    if (!query.exec("SELECT game_id, media_object_sha256 FROM cover_assets WHERE preferred = 1 "
+                    "AND media_object_sha256 IS NOT NULL AND media_object_sha256 <> ''")) return result;
+    while (query.next()) result.insert(QUuid::fromString(query.value(0).toString()), query.value(1).toString());
+    return result;
+}
+
 bool DatabaseManager::setPreferredCoverAsset(const QUuid& gameId, const QUuid& assetId) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     if (!db.transaction()) return false;
@@ -1486,7 +1576,7 @@ QList<Covers::CoverJob> DatabaseManager::getRunnableCoverJobs(const QDateTime& n
 QList<Domain::EmulatorProfile> DatabaseManager::getEmulators() {
     QList<Domain::EmulatorProfile> list;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    QSqlQuery q("SELECT id, name, launch_type, program, working_directory, detach, capture_output, hide_policy, shell_mode, enabled FROM emulators ORDER BY name", db);
+    QSqlQuery q("SELECT id, name, launch_type, program, working_directory, environment, detach, capture_output, hide_policy, shell_mode, enabled FROM emulators ORDER BY name", db);
 
     while (q.next()) {
         Domain::EmulatorProfile emu;
@@ -1495,11 +1585,17 @@ QList<Domain::EmulatorProfile> DatabaseManager::getEmulators() {
         emu.launchType = static_cast<Domain::LaunchType>(q.value(2).toInt());
         emu.program = q.value(3).toString();
         emu.workingDirectory = q.value(4).toString();
-        emu.detach = q.value(5).toBool();
-        emu.captureOutput = q.value(6).toBool();
-        emu.hidePolicy = static_cast<Domain::HidePolicy>(q.value(7).toInt());
-        emu.shellMode = q.value(8).toBool();
-        emu.enabled = q.value(9).toBool();
+        const QJsonDocument environmentDocument = QJsonDocument::fromJson(q.value(5).toByteArray());
+        if (environmentDocument.isObject()) {
+            const QJsonObject environmentObject = environmentDocument.object();
+            for (auto it = environmentObject.constBegin(); it != environmentObject.constEnd(); ++it)
+                emu.environment.insert(it.key(), it.value().toString());
+        }
+        emu.detach = q.value(6).toBool();
+        emu.captureOutput = q.value(7).toBool();
+        emu.hidePolicy = static_cast<Domain::HidePolicy>(q.value(8).toInt());
+        emu.shellMode = q.value(9).toBool();
+        emu.enabled = q.value(10).toBool();
 
         // Load Arguments
         QSqlQuery qa(db);
@@ -1531,17 +1627,18 @@ Domain::EmulatorProfile DatabaseManager::getEmulator(const QUuid& id) {
 
 bool DatabaseManager::saveEmulator(const Domain::EmulatorProfile& emulator) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    db.transaction();
+    if (!db.transaction()) return false;
 
     QSqlQuery q(db);
     q.prepare(R"(
-        INSERT INTO emulators (id, name, launch_type, program, working_directory, detach, capture_output, hide_policy, shell_mode, enabled)
-        VALUES (:id, :name, :launch_type, :program, :working_directory, :detach, :capture_output, :hide_policy, :shell_mode, :enabled)
+        INSERT INTO emulators (id, name, launch_type, program, working_directory, environment, detach, capture_output, hide_policy, shell_mode, enabled)
+        VALUES (:id, :name, :launch_type, :program, :working_directory, :environment, :detach, :capture_output, :hide_policy, :shell_mode, :enabled)
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             launch_type=excluded.launch_type,
             program=excluded.program,
             working_directory=excluded.working_directory,
+            environment=excluded.environment,
             detach=excluded.detach,
             capture_output=excluded.capture_output,
             hide_policy=excluded.hide_policy,
@@ -1553,6 +1650,10 @@ bool DatabaseManager::saveEmulator(const Domain::EmulatorProfile& emulator) {
     q.bindValue(":launch_type", static_cast<int>(emulator.launchType));
     q.bindValue(":program", emulator.program);
     q.bindValue(":working_directory", emulator.workingDirectory);
+    QJsonObject environmentObject;
+    for (auto it = emulator.environment.cbegin(); it != emulator.environment.cend(); ++it)
+        environmentObject.insert(it.key(), it.value());
+    q.bindValue(":environment", QJsonDocument(environmentObject).toJson(QJsonDocument::Compact));
     q.bindValue(":detach", emulator.detach ? 1 : 0);
     q.bindValue(":capture_output", emulator.captureOutput ? 1 : 0);
     q.bindValue(":hide_policy", static_cast<int>(emulator.hidePolicy));
@@ -1568,7 +1669,10 @@ bool DatabaseManager::saveEmulator(const Domain::EmulatorProfile& emulator) {
     QSqlQuery qdel(db);
     qdel.prepare("DELETE FROM emulator_arguments WHERE emulator_id = :emu_id");
     qdel.bindValue(":emu_id", emulator.id.toString(QUuid::WithBraces));
-    qdel.exec();
+    if (!qdel.exec()) {
+        db.rollback();
+        return false;
+    }
 
     QSqlQuery qarg(db);
     qarg.prepare("INSERT INTO emulator_arguments (id, emulator_id, position, template, optional) VALUES (:id, :emu_id, :pos, :tpl, :opt)");
@@ -1585,8 +1689,7 @@ bool DatabaseManager::saveEmulator(const Domain::EmulatorProfile& emulator) {
         }
     }
 
-    db.commit();
-    return true;
+    return db.commit();
 }
 
 bool DatabaseManager::deleteEmulator(const QUuid& id) {
@@ -1598,8 +1701,13 @@ bool DatabaseManager::deleteEmulator(const QUuid& id) {
 }
 
 bool DatabaseManager::setSystemDefaultEmulator(const QUuid& systemId, const QUuid& emulatorId) {
+    if (systemId.isNull() || emulatorId.isNull()) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    if (!db.transaction()) return false;
     QSqlQuery q(db);
+    q.prepare("UPDATE system_emulators SET is_default = 0 WHERE system_id = :sys_id");
+    q.bindValue(":sys_id", systemId.toString(QUuid::WithBraces));
+    if (!q.exec()) { db.rollback(); return false; }
     q.prepare(R"(
         INSERT INTO system_emulators (system_id, emulator_id, is_default)
         VALUES (:sys_id, :emu_id, 1)
@@ -1607,13 +1715,14 @@ bool DatabaseManager::setSystemDefaultEmulator(const QUuid& systemId, const QUui
     )");
     q.bindValue(":sys_id", systemId.toString(QUuid::WithBraces));
     q.bindValue(":emu_id", emulatorId.toString(QUuid::WithBraces));
-    return q.exec();
+    if (!q.exec()) { db.rollback(); return false; }
+    return db.commit();
 }
 
 QUuid DatabaseManager::getSystemDefaultEmulator(const QUuid& systemId) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery q(db);
-    q.prepare("SELECT emulator_id FROM system_emulators WHERE system_id = :sys_id AND is_default = 1");
+    q.prepare("SELECT emulator_id FROM system_emulators WHERE system_id = :sys_id AND is_default = 1 ORDER BY priority DESC, emulator_id LIMIT 1");
     q.bindValue(":sys_id", systemId.toString(QUuid::WithBraces));
     if (q.exec() && q.next()) {
         return QUuid::fromString(q.value(0).toString());
@@ -1731,6 +1840,37 @@ bool DatabaseManager::recordCompletedPlay(const Domain::PlaySession& session) {
     return db.commit();
 }
 
+bool DatabaseManager::recordDetachedLaunch(const Domain::PlaySession& session) {
+    if (session.gameId.isNull()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    if (!db.transaction()) return false;
+    QSqlQuery active(db);
+    active.prepare("SELECT previous_status FROM active_game_statuses WHERE game_id = :game_id");
+    active.bindValue(":game_id", session.gameId.toString(QUuid::WithBraces));
+    if (!active.exec() || !active.next()) { db.rollback(); return false; }
+    const QString previousStatus = active.value(0).toString();
+    QSqlQuery addSession(db);
+    addSession.prepare("INSERT INTO play_sessions (id, game_id, emulator_id, started_at, ended_at, duration_seconds, exit_code, exit_status, launch_error) "
+                       "VALUES (:id, :game_id, :emulator_id, :started_at, :ended_at, 0, 0, -1, :launch_error)");
+    addSession.bindValue(":id", session.id.toString(QUuid::WithBraces));
+    addSession.bindValue(":game_id", session.gameId.toString(QUuid::WithBraces));
+    addSession.bindValue(":emulator_id", session.emulatorId.isNull() ? QString() : session.emulatorId.toString(QUuid::WithBraces));
+    addSession.bindValue(":started_at", session.startedAt.toString(Qt::ISODate));
+    addSession.bindValue(":ended_at", session.endedAt.isValid() ? session.endedAt.toString(Qt::ISODate) : QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    addSession.bindValue(":launch_error", QStringLiteral("Detached launch: completion could not be observed."));
+    if (!addSession.exec()) { db.rollback(); return false; }
+    QSqlQuery restore(db);
+    restore.prepare("UPDATE games SET status = :status WHERE id = :game_id");
+    restore.bindValue(":status", previousStatus);
+    restore.bindValue(":game_id", session.gameId.toString(QUuid::WithBraces));
+    if (!restore.exec()) { db.rollback(); return false; }
+    QSqlQuery clear(db);
+    clear.prepare("DELETE FROM active_game_statuses WHERE game_id = :game_id");
+    clear.bindValue(":game_id", session.gameId.toString(QUuid::WithBraces));
+    if (!clear.exec()) { db.rollback(); return false; }
+    return db.commit();
+}
+
 bool DatabaseManager::restoreInterruptedGameStatuses() {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     if (!db.transaction()) return false;
@@ -1797,7 +1937,24 @@ QList<Domain::PlaySession> DatabaseManager::getPlaySessionsForGame(const QUuid& 
 
 bool DatabaseManager::saveDatSource(const DatSource& source, const QList<DatEntry>& entries) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    db.transaction();
+    if (!db.transaction()) return false;
+
+    QUuid sourceId = source.id;
+    // Re-importing the same file is an update, not a second competing source.
+    if (!source.filePath.trimmed().isEmpty()) {
+        QSqlQuery existing(db);
+        existing.prepare("SELECT id FROM dat_sources WHERE system_id = :system_id AND file_path = :file_path LIMIT 1");
+        existing.bindValue(":system_id", source.systemId.toString(QUuid::WithBraces));
+        existing.bindValue(":file_path", source.filePath);
+        if (!existing.exec()) { db.rollback(); return false; }
+        if (existing.next()) {
+            sourceId = QUuid::fromString(existing.value(0).toString());
+            QSqlQuery clearEntries(db);
+            clearEntries.prepare("DELETE FROM dat_entries WHERE dat_source_id = :source_id");
+            clearEntries.bindValue(":source_id", sourceId.toString(QUuid::WithBraces));
+            if (!clearEntries.exec()) { db.rollback(); return false; }
+        }
+    }
 
     QSqlQuery q(db);
     q.prepare(R"(
@@ -1811,7 +1968,7 @@ bool DatabaseManager::saveDatSource(const DatSource& source, const QList<DatEntr
             file_path=excluded.file_path,
             imported_at=excluded.imported_at
     )");
-    q.bindValue(":id", source.id.toString(QUuid::WithBraces));
+    q.bindValue(":id", sourceId.toString(QUuid::WithBraces));
     q.bindValue(":system_id", source.systemId.toString(QUuid::WithBraces));
     q.bindValue(":name", source.name);
     q.bindValue(":version", source.version);
@@ -1833,7 +1990,7 @@ bool DatabaseManager::saveDatSource(const DatSource& source, const QList<DatEntr
 
     for (const auto& entry : entries) {
         qe.bindValue(":id", entry.id.toString(QUuid::WithBraces));
-        qe.bindValue(":dat_source_id", source.id.toString(QUuid::WithBraces));
+        qe.bindValue(":dat_source_id", sourceId.toString(QUuid::WithBraces));
         qe.bindValue(":game_name", entry.gameName);
         qe.bindValue(":rom_name", entry.romName);
         qe.bindValue(":size", entry.size);
@@ -1847,8 +2004,7 @@ bool DatabaseManager::saveDatSource(const DatSource& source, const QList<DatEntr
         }
     }
 
-    db.commit();
-    return true;
+    return db.commit();
 }
 
 QList<DatSource> DatabaseManager::getDatSources(const QUuid& systemId) {
@@ -1899,18 +2055,24 @@ QList<DatEntry> DatabaseManager::getDatEntriesForSource(const QUuid& sourceId) {
     return list;
 }
 
-bool DatabaseManager::matchDatEntry(const QString& crc32, const QString& sha1, DatEntry& matchedEntry) {
+bool DatabaseManager::matchDatEntry(const QUuid& systemId, const QString& crc32, const QString& sha1, DatEntry& matchedEntry) {
+    if (systemId.isNull()) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery q(db);
     if (!sha1.isEmpty()) {
-        q.prepare("SELECT id, dat_source_id, game_name, rom_name, size, crc32, md5, sha1 FROM dat_entries WHERE sha1 = :sha1");
+        q.prepare("SELECT dat_entries.id, dat_entries.dat_source_id, dat_entries.game_name, dat_entries.rom_name, dat_entries.size, dat_entries.crc32, dat_entries.md5, dat_entries.sha1 "
+                  "FROM dat_entries JOIN dat_sources ON dat_sources.id = dat_entries.dat_source_id "
+                  "WHERE dat_sources.system_id = :system_id AND dat_entries.sha1 = :sha1 ORDER BY dat_sources.imported_at DESC LIMIT 1");
         q.bindValue(":sha1", sha1.toLower());
     } else if (!crc32.isEmpty()) {
-        q.prepare("SELECT id, dat_source_id, game_name, rom_name, size, crc32, md5, sha1 FROM dat_entries WHERE crc32 = :crc32");
+        q.prepare("SELECT dat_entries.id, dat_entries.dat_source_id, dat_entries.game_name, dat_entries.rom_name, dat_entries.size, dat_entries.crc32, dat_entries.md5, dat_entries.sha1 "
+                  "FROM dat_entries JOIN dat_sources ON dat_sources.id = dat_entries.dat_source_id "
+                  "WHERE dat_sources.system_id = :system_id AND dat_entries.crc32 = :crc32 ORDER BY dat_sources.imported_at DESC LIMIT 1");
         q.bindValue(":crc32", crc32.toLower());
     } else {
         return false;
     }
+    q.bindValue(":system_id", systemId.toString(QUuid::WithBraces));
 
     if (q.exec() && q.next()) {
         matchedEntry.id = QUuid::fromString(q.value(0).toString());

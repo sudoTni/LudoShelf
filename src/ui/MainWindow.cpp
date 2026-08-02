@@ -30,6 +30,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QFileInfo>
+#include <QDirIterator>
 #include <QToolButton>
 #include <QFile>
 #include <QHash>
@@ -51,8 +52,16 @@
 #include <QProgressBar>
 #include <QResizeEvent>
 #include <QActionGroup>
+#include <QComboBox>
 
 namespace LudoShelf::UI {
+namespace {
+struct ScanRunResult {
+    QList<Scanning::ScanCandidate> candidates;
+    QSet<QString> observedPaths;
+    bool completedAllRoots{true};
+};
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -63,6 +72,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_coverAcquisitionService(new Covers::CoverAcquisitionService(this))
     , m_thumbnailCatalog(new Covers::LibretroThumbnailCatalog(this))
     , m_romMetadataCoordinator(new Metadata::RomMetadataCoordinator(this))
+    , m_libretroDatabaseBootstrapper(new Metadata::LibretroDatabaseBootstrapper(this))
     , m_retroArchContextWatcher(new QFutureWatcher<Covers::RetroArchDiscoveryContext>(this))
     , m_scanRootWatcher(new QFileSystemWatcher(this))
     , m_scanWatchDebounce(new QTimer(this))
@@ -80,6 +90,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_scanRootWatcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString& path) {
         const QUuid systemId = m_watchedSystemByPath.value(QFileInfo(path).absoluteFilePath());
         if (!systemId.isNull()) m_pendingWatchedSystems.insert(systemId);
+        // QFileSystemWatcher drops paths that are renamed or deleted. Rebuild
+        // registrations after a change so a recreated root can be watched.
+        if (!QFileInfo(path).exists()) refreshScanRootWatchers();
         if (!m_pendingWatchedSystems.isEmpty()) m_scanWatchDebounce->start();
     });
     connect(m_scanWatchDebounce, &QTimer::timeout, this, [this] {
@@ -94,6 +107,14 @@ MainWindow::MainWindow(QWidget *parent)
     loadSystems();
 
     statusBar()->showMessage("LudoShelf Ready");
+    connect(m_libretroDatabaseBootstrapper, &Metadata::LibretroDatabaseBootstrapper::downloadStarted, this, [this] {
+        statusBar()->showMessage("Downloading the Libretro ROM database…");
+    });
+    connect(m_libretroDatabaseBootstrapper, &Metadata::LibretroDatabaseBootstrapper::downloadFinished, this,
+            [this](bool available, const QString& message) {
+        statusBar()->showMessage(available ? message : QStringLiteral("Libretro database unavailable: %1").arg(message), 8000);
+    });
+    QTimer::singleShot(0, m_libretroDatabaseBootstrapper, &Metadata::LibretroDatabaseBootstrapper::ensureAvailable);
 
     connect(m_launchService, &Launch::LaunchService::gameStarted, this, [this](const QUuid& id, qint64 pid) {
         if (Database::DatabaseManager::instance().markGameLaunching(id) && id == m_selectedGameId) {
@@ -111,12 +132,17 @@ MainWindow::MainWindow(QWidget *parent)
         session.durationSeconds = qMax(0, duration);
         session.exitCode = exitCode;
         session.exitStatus = static_cast<int>(status);
-        const bool recorded = Database::DatabaseManager::instance().recordCompletedPlay(session);
+        const bool detached = duration < 0;
+        const bool recorded = detached
+            ? Database::DatabaseManager::instance().recordDetachedLaunch(session)
+            : Database::DatabaseManager::instance().recordCompletedPlay(session);
         if (recorded && id == m_selectedGameId) {
             loadGamesForSystem(m_currentSystemId);
             onGameSelected(id);
         }
-        statusBar()->showMessage(QString("Game process finished with code %1 (Duration: %2s)").arg(exitCode).arg(duration), 5000);
+        statusBar()->showMessage(detached
+            ? QStringLiteral("Detached game launch started; completion and play time are not tracked.")
+            : QString("Game process finished with code %1 (Duration: %2s)").arg(exitCode).arg(duration), 5000);
     });
 
     connect(m_launchService, &Launch::LaunchService::launchFailed, this, [this](const QUuid& id, const QString& error) {
@@ -195,7 +221,9 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const QUuid& gameId, const Metadata::RomMetadata& metadata, bool stale) {
         const QDate releaseDate = metadata.releaseYear > 0 ? QDate(metadata.releaseYear, 1, 1) : QDate();
         const QString region = metadata.regions.isEmpty() ? QString() : metadata.regions.first();
-        if (Database::DatabaseManager::instance().fillGameMetadataFields(gameId, releaseDate, metadata.developer, region)) {
+        if (Database::DatabaseManager::instance().fillGameMetadataFields(gameId, releaseDate, metadata.developer, region,
+                                                                           metadata.publisher, metadata.languages, metadata.genres,
+                                                                           metadata.description)) {
             const Domain::Game updatedGame = Database::DatabaseManager::instance().getGame(gameId);
             if (updatedGame.systemId == m_currentSystemId) m_gameTableModel->updateGame(updatedGame);
         }
@@ -323,17 +351,49 @@ void MainWindow::setupUi() {
     // View Switcher buttons
     auto *tableBtn = new QToolButton(rightWidget);
     tableBtn->setText("Table");
+    tableBtn->setAccessibleName("Table view");
     topBarLayout->addWidget(tableBtn);
 
     auto *gridBtn = new QToolButton(rightWidget);
     gridBtn->setText("Grid");
+    gridBtn->setAccessibleName("Artwork grid view");
     topBarLayout->addWidget(gridBtn);
 
     m_searchEdit = new QLineEdit(rightWidget);
     m_searchEdit->setPlaceholderText("Search titles, developers (Ctrl+F)...");
+    m_searchEdit->setAccessibleName("Search game library");
+    m_searchEdit->setAccessibleDescription("Filters games by title and developer as you type.");
     m_searchEdit->setClearButtonEnabled(true);
     m_searchEdit->setMaximumWidth(280);
     topBarLayout->addWidget(m_searchEdit);
+
+    auto *statusFilter = new QComboBox(rightWidget);
+    statusFilter->setAccessibleName("Play status filter");
+    statusFilter->addItem("All statuses", QString());
+    statusFilter->addItem("Unplayed", QStringLiteral("Unplayed"));
+    statusFilter->addItem("Played", QStringLiteral("Played"));
+    topBarLayout->addWidget(statusFilter);
+    connect(statusFilter, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, statusFilter](int) {
+        m_gameFilterProxyModel->setStatusFilter(statusFilter->currentData().toString());
+    });
+
+    auto *regionFilter = new QLineEdit(rightWidget);
+    regionFilter->setPlaceholderText("Region");
+    regionFilter->setAccessibleName("Region filter");
+    regionFilter->setMaximumWidth(100);
+    topBarLayout->addWidget(regionFilter);
+    connect(regionFilter, &QLineEdit::textChanged, this, [this](const QString& value) {
+        m_gameFilterProxyModel->setRegionFilter(value);
+    });
+
+    auto *genreFilter = new QLineEdit(rightWidget);
+    genreFilter->setPlaceholderText("Genre");
+    genreFilter->setAccessibleName("Genre filter");
+    genreFilter->setMaximumWidth(100);
+    topBarLayout->addWidget(genreFilter);
+    connect(genreFilter, &QLineEdit::textChanged, this, [this](const QString& value) {
+        m_gameFilterProxyModel->setGenreFilter(value);
+    });
 
     rightLayout->addLayout(topBarLayout);
 
@@ -343,11 +403,13 @@ void MainWindow::setupUi() {
     m_viewStack = new QStackedWidget(gamesSplitter);
 
     m_gamesTableView = new GamesTableView(m_viewStack);
+    m_gamesTableView->setAccessibleName("Games table");
     m_gamesTableView->setProxyModel(m_gameFilterProxyModel);
     m_gamesTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_viewStack->addWidget(m_gamesTableView);
 
     m_gamesGridView = new GamesGridView(m_viewStack);
+    m_gamesGridView->setAccessibleName("Games artwork grid");
     m_gamesGridView->setProxyModel(m_gameFilterProxyModel);
     m_gamesGridView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_viewStack->addWidget(m_gamesGridView);
@@ -453,13 +515,14 @@ void MainWindow::setupMenuBar() {
     toolsMenu->addAction("&DAT Audit && Collection Verification...", this, &MainWindow::onDatAuditClicked);
     toolsMenu->addAction("Fetch Missing Cover Art for Current System", this, &MainWindow::onFindCoverArtClicked);
     toolsMenu->addAction("Refresh ROM Metadata for Current System", this, [this] { onRefreshRomMetadataClicked(true); });
+    toolsMenu->addAction("Audit Media Storage…", this, &MainWindow::onAuditMediaStorageClicked);
 
     QMenu *helpMenu = menuBar()->addMenu("&Help");
     helpMenu->addAction("System &Diagnostics...", this, &MainWindow::onDiagnosticsClicked);
     helpMenu->addSeparator();
     helpMenu->addAction("&About LudoShelf", this, [this]() {
         QMessageBox::about(this, "About LudoShelf",
-            "<h3>LudoShelf v0.1.0</h3>"
+            "<h3>LudoShelf v0.2.0</h3>"
             "<p>Qt Game Library & Emulator Frontend</p>"
             "<p>Developed by sudoTni</p>"
             "<p>Built with C++20 and Qt 6</p>");
@@ -483,13 +546,31 @@ void MainWindow::refreshScanRootWatchers() {
     QStringList paths;
     for (const Domain::System& system : Database::DatabaseManager::instance().getSystems()) {
         for (const Database::ScanRoot& root : Database::DatabaseManager::instance().getScanRoots(system.id)) {
-            const QString path = QFileInfo(root.path).absoluteFilePath();
-            if (!root.watchChanges || !QFileInfo(path).isDir() || m_watchedSystemByPath.contains(path)) continue;
-            m_watchedSystemByPath.insert(path, system.id);
-            paths.append(path);
+            const QString rootPath = QFileInfo(root.path).absoluteFilePath();
+            if (!root.watchChanges || !QFileInfo(rootPath).isDir()) continue;
+            
+            QList<QString> dirsToWatch{rootPath};
+            if (root.recursive) {
+                QDirIterator it(rootPath, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+                while (it.hasNext()) {
+                    dirsToWatch.append(it.next());
+                }
+            }
+            
+            for (const QString& path : dirsToWatch) {
+                if (m_watchedSystemByPath.contains(path)) continue;
+                m_watchedSystemByPath.insert(path, system.id);
+                paths.append(path);
+            }
         }
     }
-    if (!paths.isEmpty()) m_scanRootWatcher->addPaths(paths);
+    if (!paths.isEmpty()) {
+        const QStringList failed = m_scanRootWatcher->addPaths(paths);
+        if (!failed.isEmpty()) {
+            qWarning() << "Automatic ROM watching is degraded; directories could not be watched:" << failed.size();
+            statusBar()->showMessage(QString("Automatic ROM watching is degraded for %1 directories; use manual rescan if changes are missed.").arg(failed.size()), 10000);
+        }
+    }
 }
 
 void MainWindow::onSystemSelected(const QUuid& systemId) {
@@ -522,7 +603,9 @@ void MainWindow::loadGamesForSystem(const QUuid& systemId) {
         const bool needsDeveloper = game.developer.trimmed().isEmpty() && !metadata.developer.trimmed().isEmpty();
         const bool needsRegion = game.region.trimmed().isEmpty() && !region.trimmed().isEmpty();
         if (needsReleaseDate || needsDeveloper || needsRegion) {
-            Database::DatabaseManager::instance().fillGameMetadataFields(game.id, releaseDate, metadata.developer, region);
+            Database::DatabaseManager::instance().fillGameMetadataFields(game.id, releaseDate, metadata.developer, region,
+                                                                           metadata.publisher, metadata.languages, metadata.genres,
+                                                                           metadata.description);
             refreshedFromCache = true;
         }
     }
@@ -552,12 +635,17 @@ void MainWindow::onGameActivated(const QUuid& gameId) {
         }
     }
 
-    if (emuProfile.program.isEmpty()) {
-        emuProfile.name = "Default Launcher";
-        emuProfile.program = "echo";
-    }
-
     Domain::GameFile primaryFile = Database::DatabaseManager::instance().getPrimaryFileForGame(targetGame.id);
+    if (primaryFile.id.isNull() || !primaryFile.available || primaryFile.path.isEmpty() || !QFileInfo::exists(primaryFile.path)) {
+        QMessageBox::warning(this, "Game File Unavailable",
+            "This game does not have an available primary ROM file. Rescan or relink the game before launching it.");
+        return;
+    }
+    if (emuProfile.id.isNull() || !emuProfile.enabled || emuProfile.program.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "Emulator Required",
+            "No enabled emulator profile is configured for this system. Configure one before launching a game.");
+        return;
+    }
 
     statusBar()->showMessage(QString("Launching %1...").arg(targetGame.title));
     m_launchService->launchGame(targetGame, primaryFile, targetSys, emuProfile);
@@ -627,6 +715,10 @@ void MainWindow::onRescanSystemClicked(const QUuid& systemId) {
 }
 
 void MainWindow::rescanSystem(const QUuid& systemId) {
+    if (m_activeRescans.contains(systemId)) {
+        statusBar()->showMessage("A rescan is already running for this system.", 4000);
+        return;
+    }
     const Domain::System system = Database::DatabaseManager::instance().getSystem(systemId);
     const auto roots = Database::DatabaseManager::instance().getScanRoots(systemId);
     if (system.id.isNull() || roots.isEmpty()) {
@@ -634,51 +726,64 @@ void MainWindow::rescanSystem(const QUuid& systemId) {
         return;
     }
 
-    QHash<QString, QUuid> knownPaths;
-    const auto existingGames = Database::DatabaseManager::instance().getGamesForSystem(systemId);
-    for (const auto& game : existingGames) {
-        const auto file = Database::DatabaseManager::instance().getPrimaryFileForGame(game.id);
-        if (!file.path.isEmpty()) knownPaths.insert(QFileInfo(file.path).absoluteFilePath(), game.id);
-    }
-
-    Scanning::DirectoryScanner scanner;
-    QList<QPair<Domain::Game, Domain::GameFile>> newGames;
-    int refreshedGames = 0;
-    for (const auto& root : roots) {
-        if (root.path.isEmpty() || !QFileInfo(root.path).isDir()) continue;
-        Scanning::ScanOptions options;
-        options.allowedExtensions = root.includeExtensions;
-        options.excludedExtensions = root.excludeExtensions;
-        options.excludedPatterns = root.excludePatterns;
-        options.recursive = root.recursive;
-        options.followSymlinks = root.followSymlinks;
-        const auto candidates = scanner.scanDirectory(systemId, root.path, options);
-        for (const auto& candidate : candidates) {
+    m_activeRescans.insert(systemId);
+    statusBar()->showMessage(QString("Scanning %1 in the background…").arg(system.name));
+    auto *watcher = new QFutureWatcher<ScanRunResult>(this);
+    connect(watcher, &QFutureWatcher<ScanRunResult>::finished, this, [this, watcher, systemId] {
+        const ScanRunResult scan = watcher->result();
+        watcher->deleteLater();
+        m_activeRescans.remove(systemId);
+        QHash<QString, QUuid> knownPaths;
+        for (const auto& game : Database::DatabaseManager::instance().getGamesForSystem(systemId)) {
+            const auto file = Database::DatabaseManager::instance().getPrimaryFileForGame(game.id);
+            if (!file.path.isEmpty()) knownPaths.insert(QFileInfo(file.path).absoluteFilePath(), game.id);
+        }
+        QList<QPair<Domain::Game, Domain::GameFile>> newGames;
+        int refreshedGames = 0;
+        for (const auto& candidate : scan.candidates) {
             const QString path = QFileInfo(candidate.file.path).absoluteFilePath();
             if (knownPaths.contains(path)) {
                 if (Database::DatabaseManager::instance().updateScannedGame(knownPaths.value(path), candidate.game, candidate.file)) ++refreshedGames;
-                continue;
+            } else {
+                knownPaths.insert(path, candidate.game.id);
+                newGames.append({candidate.game, candidate.file});
             }
-            knownPaths.insert(path, candidate.game.id);
-            newGames.append({candidate.game, candidate.file});
         }
-    }
-
-    if (newGames.isEmpty()) {
-        statusBar()->showMessage(QString("ROM rescan complete: refreshed %1 existing games; no new games found.").arg(refreshedGames), 5000);
-        return;
-    }
-    if (!Database::DatabaseManager::instance().saveGamesBatch(newGames)) {
-        QMessageBox::critical(this, "Rescan Failed", "New ROM files could not be saved to the library.");
-        return;
-    }
-    QList<QUuid> newGameIds;
-    for (const auto& entry : newGames) newGameIds.append(entry.first.id);
-    scheduleEnrichment(newGameIds, true, true);
-    loadSystems();
-    onSystemSelected(systemId);
-    statusBar()->showMessage(QString("ROM rescan complete: added %1 new games and refreshed %2 existing games.")
-        .arg(newGames.size()).arg(refreshedGames), 6000);
+        if (scan.completedAllRoots && !Database::DatabaseManager::instance().reconcileScannedFiles(systemId, scan.observedPaths)) {
+            QMessageBox::critical(this, "Rescan Failed", "The scan completed but file availability could not be reconciled.");
+            return;
+        }
+        if (!newGames.isEmpty() && !Database::DatabaseManager::instance().saveGamesBatch(newGames)) {
+            QMessageBox::critical(this, "Rescan Failed", "New ROM files could not be saved to the library.");
+            return;
+        }
+        QList<QUuid> newGameIds;
+        for (const auto& entry : newGames) newGameIds.append(entry.first.id);
+        if (!newGameIds.isEmpty()) scheduleEnrichment(newGameIds, true, true);
+        loadSystems();
+        refreshScanRootWatchers();
+        if (m_currentSystemId == systemId) onSystemSelected(systemId);
+        const QString suffix = scan.completedAllRoots ? QString() : QStringLiteral(" Some unavailable roots were not reconciled.");
+        statusBar()->showMessage(QString("ROM rescan complete: added %1 new games and refreshed %2 existing games.%3")
+            .arg(newGames.size()).arg(refreshedGames).arg(suffix), 7000);
+    });
+    watcher->setFuture(QtConcurrent::run([systemId, roots] {
+        ScanRunResult result;
+        Scanning::DirectoryScanner scanner;
+        for (const auto& root : roots) {
+            if (root.path.isEmpty() || !QFileInfo(root.path).isDir()) { result.completedAllRoots = false; continue; }
+            Scanning::ScanOptions options;
+            options.allowedExtensions = root.includeExtensions;
+            options.excludedExtensions = root.excludeExtensions;
+            options.excludedPatterns = root.excludePatterns;
+            options.recursive = root.recursive;
+            options.followSymlinks = root.followSymlinks;
+            const auto candidates = scanner.scanDirectory(systemId, root.path, options);
+            for (const auto& candidate : candidates) result.observedPaths.insert(QFileInfo(candidate.file.path).absoluteFilePath());
+            result.candidates.append(candidates);
+        }
+        return result;
+    }));
 }
 
 void MainWindow::onEditEmulatorClicked(const QUuid& systemId) {
@@ -747,6 +852,14 @@ void MainWindow::onExportJsonClicked() {
 void MainWindow::onImportJsonClicked() {
     QString file = QFileDialog::getOpenFileName(this, "Import Library from JSON", QString(), "JSON Files (*.json)");
     if (!file.isEmpty()) {
+        const auto reply = QMessageBox::warning(this, "Replace Library from Backup",
+            "Importing a library snapshot replaces the current library records. A database safety backup will be created first. ROM files outside LudoShelf are never changed.",
+            QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+        if (reply != QMessageBox::Yes) return;
+        if (!Database::DatabaseManager::instance().createBackup()) {
+            QMessageBox::critical(this, "Import Error", "Could not create the required pre-import database backup.");
+            return;
+        }
         if (App::LibraryBackupService::importLibraryFromJson(file)) {
             loadSystems();
             QMessageBox::information(this, "Import Success", "Library successfully imported from JSON.");
@@ -777,6 +890,25 @@ void MainWindow::onDatAuditClicked() {
 void MainWindow::onDiagnosticsClicked() {
     DiagnosticsDialog dialog(this);
     dialog.exec();
+}
+
+void MainWindow::onAuditMediaStorageClicked() {
+    const Media::MediaMaintenanceReport report = Media::MediaStorageManager::instance().auditStorage();
+    QString details = QString("%1 referenced objects, %2 missing referenced objects, and %3 unreferenced objects were found.")
+        .arg(report.referencedObjects).arg(report.missingObjects).arg(report.orphanedObjects);
+    if (!report.missingHashes.isEmpty()) details += QString("\n\nMissing object hashes: %1").arg(report.missingHashes.mid(0, 5).join(", "));
+    if (report.orphanedObjects == 0) {
+        QMessageBox::information(this, "Media Storage Audit", details);
+        return;
+    }
+    const auto reply = QMessageBox::question(this, "Media Storage Audit",
+        details + "\n\nRemove unreferenced managed media and thumbnail cache entries? External legacy paths will not be touched.",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+    const auto cleaned = Media::MediaStorageManager::instance().auditStorage(true);
+    QMessageBox::information(this, "Media Storage Cleanup",
+        QString("Removed %1 unreferenced media objects. %2 referenced objects are still missing.")
+            .arg(cleaned.removedObjects).arg(cleaned.missingObjects));
 }
 
 void MainWindow::onEditGameClicked() {
@@ -814,12 +946,16 @@ void MainWindow::onTestLaunchClicked() {
         }
     }
 
-    if (emuProfile.program.isEmpty()) {
-        emuProfile.name = "Default Launcher";
-        emuProfile.program = "retroarch";
-    }
-
     Domain::GameFile primaryFile = Database::DatabaseManager::instance().getPrimaryFileForGame(targetGame.id);
+
+    if (primaryFile.id.isNull() || !primaryFile.available || primaryFile.path.isEmpty() || !QFileInfo::exists(primaryFile.path)) {
+        QMessageBox::warning(this, "Game File Unavailable", "This game does not have an available primary ROM file.");
+        return;
+    }
+    if (emuProfile.id.isNull() || !emuProfile.enabled || emuProfile.program.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "Emulator Required", "No enabled emulator profile is configured for this system.");
+        return;
+    }
 
     Launch::LaunchCommand cmd = Launch::LaunchService::prepareCommand(targetGame, primaryFile, targetSys, emuProfile);
 

@@ -4,14 +4,16 @@
 #include "../media/PlaceholderGenerator.h"
 
 #include <QFileInfo>
-#include <QTimeZone>
+#include <QLocale>
 
 #include <algorithm>
 
 namespace LudoShelf::Models {
 
 GameTableModel::GameTableModel(QObject *parent)
-    : QAbstractTableModel(parent) {}
+    : QAbstractTableModel(parent) {
+    m_coverPixmapByGame.setMaxCost(300);
+}
 
 int GameTableModel::rowCount(const QModelIndex &parent) const {
     if (parent.isValid()) return 0;
@@ -32,23 +34,14 @@ QVariant GameTableModel::data(const QModelIndex &index, int role) const {
 
     if (role == GameIdRole) return g.id.toString(QUuid::WithBraces);
     if (role == SystemIdRole) return g.systemId.toString(QUuid::WithBraces);
+    if (role == GenreTextRole) return g.genres.join(QStringLiteral(", "));
 
     if (role == CoverPixmapRole) {
-        const auto cached = m_coverPixmapByGame.constFind(g.id);
-        if (cached != m_coverPixmapByGame.cend()) return cached.value();
-
-        const auto preferredAsset = Database::DatabaseManager::instance().getPreferredCoverAsset(g.id);
-        QString sha256 = preferredAsset.mediaObjectSha256;
-
-        if (sha256.isEmpty()) {
-            auto media = Database::DatabaseManager::instance().getMediaForGame(g.id);
-            for (const auto& item : media) {
-                if (!item.path.isEmpty()) {
-                    sha256 = QFileInfo(item.path).completeBaseName();
-                    if (item.preferred) break;
-                }
-            }
+        if (const QPixmap* cached = m_coverPixmapByGame.object(g.id)) {
+            return *cached;
         }
+
+        const QString sha256 = m_coverShaByGame.value(g.id);
 
         QPixmap pixmap;
         if (!sha256.isEmpty()) {
@@ -64,13 +57,10 @@ QVariant GameTableModel::data(const QModelIndex &index, int role) const {
                 systemName = Database::DatabaseManager::instance().getSystem(g.systemId).name;
                 m_systemNameById.insert(g.systemId, systemName);
             }
-            // Placeholder artwork is a display fallback, not user data.  Do
-            // not write it to the database from a paint role; actual cover
-            // acquisition still persists its deliberate placeholders.
             pixmap = QPixmap::fromImage(Media::PlaceholderGenerator::generatePlaceholderImage(
                 g.title, systemName, 140, 210));
         }
-        m_coverPixmapByGame.insert(g.id, pixmap);
+        m_coverPixmapByGame.insert(g.id, new QPixmap(pixmap));
         return pixmap;
     }
 
@@ -89,9 +79,7 @@ QVariant GameTableModel::data(const QModelIndex &index, int role) const {
         case ColumnStatus: return g.status;
         case ColumnLastPlayed: {
             if (!g.lastPlayed.isValid()) return "Never";
-            static const QTimeZone easternTime("America/New_York");
-            const QDateTime eastern = easternTime.isValid() ? g.lastPlayed.toTimeZone(easternTime) : g.lastPlayed.toLocalTime();
-            return eastern.toString("yyyy-MM-dd HH:mm t");
+            return QLocale().toString(g.lastPlayed.toLocalTime(), QLocale::ShortFormat);
         }
         case ColumnPlayCount: return g.playCount;
         default: break;
@@ -123,6 +111,8 @@ void GameTableModel::setGames(const QList<Domain::Game>& games) {
     m_games = games;
     m_coverPixmapByGame.clear();
     m_systemNameById.clear();
+    m_coverShaByGame = Database::DatabaseManager::instance().getPreferredCoverObjectHashes();
+    for (const auto& system : Database::DatabaseManager::instance().getSystems()) m_systemNameById.insert(system.id, system.name);
     std::stable_sort(m_games.begin(), m_games.end(), [](const Domain::Game& left, const Domain::Game& right) {
         const int comparison = QString::localeAwareCompare(left.title.toCaseFolded(), right.title.toCaseFolded());
         if (comparison != 0) return comparison < 0;

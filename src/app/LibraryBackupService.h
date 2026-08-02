@@ -8,7 +8,9 @@ namespace LudoShelf::App {
 class LibraryBackupService {
 public:
     static bool exportLibraryToJson(const QString& targetJsonPath);
-    static bool importLibraryFromJson(const QString& sourceJsonPath);
+    // Replaces the library by default.  Merge is intentionally opt-in because
+    // it can retain records that are absent from the imported snapshot.
+    static bool importLibraryFromJson(const QString& sourceJsonPath, bool replaceExisting = true);
 };
 
 } // namespace LudoShelf::App

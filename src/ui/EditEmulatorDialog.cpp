@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QLabel>
+#include <QRegularExpression>
 
 #include <algorithm>
 
@@ -99,6 +100,21 @@ EditEmulatorDialog::EditEmulatorDialog(const Domain::EmulatorProfile& emulator, 
     m_argumentsEdit->setFixedHeight(115);
     layout->addWidget(m_argumentsEdit);
 
+    layout->addWidget(new QLabel("Environment Variables", this));
+    auto *environmentHelp = new QLabel("One KEY=VALUE assignment per line. Values are passed directly to the emulator process and are not interpreted by a shell.", this);
+    environmentHelp->setWordWrap(true);
+    environmentHelp->setStyleSheet("color: #aaa;");
+    layout->addWidget(environmentHelp);
+    m_environmentEdit = new QPlainTextEdit(this);
+    QStringList environmentLines;
+    for (auto it = emulator.environment.cbegin(); it != emulator.environment.cend(); ++it)
+        environmentLines.append(it.key() + "=" + it.value());
+    environmentLines.sort();
+    m_environmentEdit->setPlainText(environmentLines.join('\n'));
+    m_environmentEdit->setPlaceholderText("SDL_VIDEODRIVER=x11\nLIBGL_DRIVERS_PATH=/path/to/drivers");
+    m_environmentEdit->setFixedHeight(82);
+    layout->addWidget(m_environmentEdit);
+
     auto *btnLayout = new QHBoxLayout();
     btnLayout->addStretch();
 
@@ -143,6 +159,18 @@ void EditEmulatorDialog::accept() {
         arg.position = static_cast<int>(m_emulator.arguments.size());
         arg.templateString = templateString;
         m_emulator.arguments.append(arg);
+    }
+
+    m_emulator.environment.clear();
+    const QStringList environmentLines = m_environmentEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
+    for (const QString& line : environmentLines) {
+        const int separator = line.indexOf('=');
+        const QString key = line.left(separator).trimmed();
+        if (separator <= 0 || key.isEmpty() || key.contains(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")))) {
+            QMessageBox::warning(this, "Validation Error", "Each environment entry must use a shell-independent KEY=VALUE format, with KEY containing only letters, digits, and underscores.");
+            return;
+        }
+        m_emulator.environment.insert(key, line.mid(separator + 1));
     }
 
     QDialog::accept();

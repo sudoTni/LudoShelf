@@ -111,6 +111,24 @@ private slots:
 #endif
     }
 
+    void rejectsDisabledProfileAndUnavailableRom() {
+        LudoShelf::Domain::Game game;
+        LudoShelf::Domain::GameFile file;
+        file.path = QStringLiteral("/definitely/not/present.rom");
+        LudoShelf::Domain::System system;
+        LudoShelf::Domain::EmulatorProfile emulator;
+        emulator.program = "retroarch";
+        emulator.enabled = false;
+        auto command = LudoShelf::Launch::LaunchService::prepareCommand(game, file, system, emulator);
+        QVERIFY(!command.valid);
+        QCOMPARE(command.validationError, QString("Emulator profile is disabled."));
+
+        emulator.enabled = true;
+        command = LudoShelf::Launch::LaunchService::prepareCommand(game, file, system, emulator);
+        QVERIFY(!command.valid);
+        QVERIFY(command.validationError.contains("unavailable"));
+    }
+
 };
 
 QTEST_MAIN(TestLaunchService)
