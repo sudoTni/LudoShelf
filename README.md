@@ -13,9 +13,7 @@ emulator launch profiles, enriches games with Libretro RDB metadata and cover
 art, and provides backup, DAT-audit, and media-maintenance tools. It is an
 early `0.2.0` project; the README describes the behavior implemented in this
 repository, rather than a compatibility promise for future releases.
-
-<img width="1920" height="1014" alt="ludoshelf_ss03" src="https://github.com/user-attachments/assets/6b6ae847-0129-4dd3-867f-a340f8cd6b49" />
-
+<p><img width="1920" height="1014" alt="ludoshelf_ss03" src="https://github.com/user-attachments/assets/6b6ae847-0129-4dd3-867f-a340f8cd6b49" /></p>
 **Important**: LudoShelf does not include or distribute game ROMs, BIOS files, emulator cores,
 or other copyrighted game content. Users are responsible for ensuring that
 their use of ROMs, emulator software, artwork, and metadata complies with
