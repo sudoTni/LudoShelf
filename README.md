@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A desktop game-library manager and emulator launcher built with C++20 and Qt 6.
+  A Linux-first game-library manager and emulator launcher built with C++20 and Qt 6.
 </p>
 
 LudoShelf indexes ROM folders into a local SQLite library, lets you configure
